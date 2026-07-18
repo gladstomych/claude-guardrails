@@ -28,7 +28,7 @@
     {
       "name": "plugin-vet",
       "source": "./plugins/plugin-vet",
-      "description": "Security-review a plugin before installing it: /vet-plugin runs a deterministic malware scan of its hooks and scripts, then an AI review, with a BLOCK / WARN / CLEAN verdict."
+      "description": "Security-review a plugin before installing it: /plugin-vet:vet runs a deterministic malware scan of its hooks and scripts, then an AI review, with a BLOCK / WARN / CLEAN verdict."
     }
   ]
 }

@@ -8,7 +8,7 @@ A small Claude Code plugin marketplace. Several plugins, one job each.
 | [`commit-guard`](plugins/commit-guard) | Keep `Co-Authored-By: Claude` out of commits | `PreToolUse` hook blocks a `git commit` carrying the trailer; a git `commit-msg` backstop strips it for cases the tool layer can't see |
 | [`commit-style`](plugins/commit-style) | Nudge commits toward Conventional Commits | A warning-only git `commit-msg` hook. A guide, not a guard: it never blocks, it only reminds |
 | [`session-logger`](plugins/session-logger) | Keep a log of what each session did | `SessionStart` / `PostToolUse` / `Stop` hooks append a per-day markdown log of file writes and bash commands |
-| [`plugin-vet`](plugins/plugin-vet) | Security-review a plugin before you install it | `/vet-plugin <repo>` clones it, runs a deterministic malware scan of its hooks and scripts, then an AI review, and gives a BLOCK / WARN / CLEAN verdict |
+| [`plugin-vet`](plugins/plugin-vet) | Security-review a plugin before you install it | `/plugin-vet:vet <repo>` clones it, runs a deterministic malware scan of its hooks and scripts, then an AI review, and gives a BLOCK / WARN / CLEAN verdict |
 
 ## Install
 
@@ -87,7 +87,7 @@ not a tool call, and it does not expand into a prompt, so nothing fires on it.
 `plugin-vet` is the gate you run yourself, first:
 
 ```shell
-/vet-plugin coo-quack/sensitive-canary
+/plugin-vet:vet coo-quack/sensitive-canary
 ```
 
 It clones the plugin to a throwaway dir, runs a zero-dep scanner
