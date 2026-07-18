@@ -15,7 +15,7 @@ A small Claude Code plugin marketplace. Two plugins, one job each.
 /plugin install commit-guard@claude-guardrails
 ```
 
-Install either one on its own — they are independent.
+Install either one on its own; they are independent.
 
 ### commit-guard: two layers
 
@@ -29,6 +29,19 @@ tool layer never sees), install the `commit-msg` hook per repo:
 
 It honours `core.hooksPath`, never overwrites an existing `commit-msg` hook (it
 chains onto it), and is idempotent.
+
+#### Fail-safe matching (by design)
+
+The `PreToolUse` hook blocks a Bash call when the command contains **both** a
+`git commit` **and** the string `Co-Authored-By: Claude` (or `Claude-Session:`)
+anywhere in it. It does not try to isolate the commit message from the rest of
+the command line. So a command that commits and *also* mentions the trailer
+string elsewhere (for example, a `grep` that checks for it in the same line) is
+blocked even though the commit itself is clean.
+
+This is deliberate: over-blocking never lets a real trailer slip through, and the
+git `commit-msg` backstop is the precise layer. If a benign command trips it,
+split the commit and the search into two separate commands.
 
 ### Also recommended: disable the trailer at the source
 
@@ -56,4 +69,4 @@ sh tests/smoke.sh
 [exmergo/skill-no-em-dashes](https://github.com/exmergo/skill-no-em-dashes) (MIT).
 See [`plugins/emdash-guard/NOTICE`](plugins/emdash-guard/NOTICE). If you also want
 Claude to *avoid reaching for* an em dash in the first place (not just get corrected
-after), install that skill alongside `emdash-guard` — prevention plus enforcement.
+after), install that skill alongside `emdash-guard`: prevention plus enforcement.
