@@ -24,6 +24,11 @@
       "name": "session-logger",
       "source": "./plugins/session-logger",
       "description": "Appends a per-day markdown log of each session: start, file writes, bash commands, and stop. Never blocks."
+    },
+    {
+      "name": "plugin-vet",
+      "source": "./plugins/plugin-vet",
+      "description": "Security-review a plugin before installing it: /vet-plugin runs a deterministic malware scan of its hooks and scripts, then an AI review, with a BLOCK / WARN / CLEAN verdict."
     }
   ]
 }

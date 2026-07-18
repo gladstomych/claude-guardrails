@@ -1,0 +1,8 @@
+{
+  "name": "plugin-vet",
+  "description": "Security-review a Claude Code plugin before you install it: a deterministic malware scan of its hooks and scripts, then an AI review, with a BLOCK / WARN / CLEAN verdict.",
+  "version": "0.1.0",
+  "author": {
+    "name": "gladstomych"
+  }
+}
