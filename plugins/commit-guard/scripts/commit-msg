@@ -1,0 +1,24 @@
+#!/bin/sh
+# commit-guard backstop: strip AI co-author attribution from any commit message.
+#
+# Installed into a repo's hooks as `commit-msg` by scripts/install-git-hook.sh
+# (or the /commit-guard:install-git-hook command). git runs it with the path to
+# the file holding the pending commit message as $1. It removes any
+# `Co-Authored-By: Claude ...` and `Claude-Session:` lines, then lets the commit
+# proceed. This catches messages the Claude tool-layer hook can't see, e.g. ones
+# passed via `git commit -F` or written in the editor.
+#
+# It never blocks a commit; it only cleans it. Human co-authors are left intact:
+# only trailers naming Claude are stripped.
+
+msg_file="$1"
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+
+if grep -qiE 'co-authored-by:[[:space:]]*claude|^[[:space:]]*claude-session:' "$msg_file"; then
+    tmp="$msg_file.commit-guard.tmp"
+    grep -viE 'co-authored-by:[[:space:]]*claude|^[[:space:]]*claude-session:' "$msg_file" > "$tmp"
+    mv "$tmp" "$msg_file"
+    echo "commit-guard: stripped Claude co-author/attribution line(s) from the commit message." >&2
+fi
+
+exit 0

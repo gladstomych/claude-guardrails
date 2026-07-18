@@ -1,0 +1,13 @@
+emdash-guard bundles a checker script from a third party:
+
+  scripts/check_em_dashes.py
+    Source:  https://github.com/exmergo/skill-no-em-dashes
+    License: MIT
+    Copyright (c) the exmergo skill-no-em-dashes authors.
+
+The script is vendored (copied in) so this plugin is self-contained: a Claude
+Code plugin is copied to a cache directory on install and cannot read files
+outside its own directory, so it cannot reference another plugin's copy.
+
+Only the checker is third-party. The hook wiring (scripts/post_write_emdash.py,
+hooks/hooks.json) is part of claude-guardrails.

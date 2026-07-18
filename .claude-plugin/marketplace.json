@@ -1,0 +1,19 @@
+{
+  "name": "claude-guardrails",
+  "owner": {
+    "name": "gladstomych",
+    "email": "glad.stomych@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "emdash-guard",
+      "source": "./plugins/emdash-guard",
+      "description": "Post-write hook: flags em dashes and stand-in dashes in files Claude writes, so Claude fixes them before moving on."
+    },
+    {
+      "name": "commit-guard",
+      "source": "./plugins/commit-guard",
+      "description": "Blocks git commits carrying a Co-Authored-By: Claude trailer, at the Claude tool layer, with a git commit-msg backstop you can install per repo."
+    }
+  ]
+}

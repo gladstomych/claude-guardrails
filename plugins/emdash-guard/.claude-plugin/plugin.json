@@ -1,0 +1,8 @@
+{
+  "name": "emdash-guard",
+  "description": "Flags em dashes and stand-in dashes in files Claude writes, and asks Claude to rewrite them with real punctuation.",
+  "version": "0.1.0",
+  "author": {
+    "name": "gladstomych"
+  }
+}
