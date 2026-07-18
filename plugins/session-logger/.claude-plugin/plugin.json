@@ -1,0 +1,8 @@
+{
+  "name": "session-logger",
+  "description": "Appends a per-day markdown log of each Claude Code session: start, file writes, bash commands, and stop. Never blocks.",
+  "version": "0.1.0",
+  "author": {
+    "name": "gladstomych"
+  }
+}

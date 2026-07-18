@@ -1,0 +1,31 @@
+#!/bin/sh
+# commit-style guide: warn (never block) when a commit subject is not
+# Conventional Commits format. git runs this as a commit-msg hook with the path
+# to the pending message file as $1. It always exits 0, so the commit proceeds;
+# it only prints a reminder to stderr when the subject does not match.
+
+msg_file="$1"
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+
+# Subject = first non-comment, non-blank line.
+subject=$(grep -vE '^[[:space:]]*#' "$msg_file" | grep -vE '^[[:space:]]*$' | head -n1)
+[ -n "$subject" ] || exit 0
+
+# Leave git's own generated messages alone.
+case "$subject" in
+    "Merge "*|"Revert "*|"fixup! "*|"squash! "*|"amend! "*) exit 0 ;;
+esac
+
+pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: .+'
+if printf '%s' "$subject" | grep -qE "$pattern"; then
+    exit 0
+fi
+
+cat >&2 <<EOF
+commit-style: heads up, this subject is not Conventional Commits format:
+  "$subject"
+Suggested shape:  type(scope): summary
+  types: feat fix docs style refactor perf test build ci chore revert
+This is a guide only. The commit was NOT blocked.
+EOF
+exit 0

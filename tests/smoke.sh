@@ -167,6 +167,61 @@ chmod +x "$R2/.git/hooks/commit-msg"
 ( cd "$R2" && git log -1 --pretty=%B > "$WORK/log2" )
 assert_absent "chain: backstop still stripped trailer" "Co-Authored-By: Claude" "$WORK/log2"
 
+echo "== commit-style guide (commit-msg-style + install-git-hook.sh) =="
+CST="$ROOT/plugins/commit-style/scripts"
+
+m="$WORK/cs1"; printf 'feat: add thing\n' > "$m"
+sh "$CST/commit-msg-style" "$m" 2>"$WORK/cserr"; rc=$?
+assert_exit "conventional subject -> allow (0)" 0 "$rc"
+[ -s "$WORK/cserr" ] && bad "conventional subject: unexpected warning" || ok "conventional subject: no warning"
+
+m="$WORK/cs2"; printf 'feat(api)!: breaking change\n' > "$m"
+sh "$CST/commit-msg-style" "$m" 2>"$WORK/cserr"; rc=$?
+assert_exit "scope + ! subject -> allow (0)" 0 "$rc"
+[ -s "$WORK/cserr" ] && bad "scope+!: unexpected warning" || ok "scope+! subject: no warning"
+
+m="$WORK/cs3"; printf 'added a thing without a type\n' > "$m"
+sh "$CST/commit-msg-style" "$m" 2>"$WORK/cserr"; rc=$?
+assert_exit "non-conventional subject -> still allow (0, guide not guard)" 0 "$rc"
+assert_contains "non-conventional subject -> warns" "commit-style" "$WORK/cserr"
+
+m="$WORK/cs4"; printf 'Merge branch main into dev\n' > "$m"
+sh "$CST/commit-msg-style" "$m" 2>"$WORK/cserr"; rc=$?
+assert_exit "merge commit -> allow (0)" 0 "$rc"
+[ -s "$WORK/cserr" ] && bad "merge commit: unexpected warning" || ok "merge commit: no warning"
+
+R3="$WORK/repo3"; mkdir -p "$R3"; ( cd "$R3" && git init -q )
+( cd "$R3" && sh "$CST/install-git-hook.sh" >/dev/null )
+( cd "$R3" && : > a && git add a && \
+  git_env git commit -m "sloppy message" >/dev/null 2>"$WORK/csgit" )
+[ "$(cd "$R3" && git rev-list --count HEAD 2>/dev/null)" = "1" ] && ok "guide: bad commit still succeeds (not blocked)" || bad "guide: commit was blocked"
+assert_contains "guide: warning shown on bad real commit" "commit-style" "$WORK/csgit"
+
+echo "== session-logger (log.py) =="
+SLG="$ROOT/plugins/session-logger/scripts"
+LOGS="$WORK/logs"
+TODAY=$(date +%F)
+LF="$LOGS/$TODAY.md"
+
+printf '{"session_id":"abcdef123456","cwd":"/proj/x"}' | SESSION_LOG_DIR="$LOGS" python3 "$SLG/log.py" start
+assert_exit "start event exits 0" 0 $?
+[ -f "$LF" ] && ok "start: per-day log file created" || bad "start: log file missing"
+assert_contains "start: session id logged" "session abcdef12 start" "$LF"
+assert_contains "start: cwd logged" "/proj/x" "$LF"
+
+printf '{"tool_name":"Bash","tool_input":{"command":"ls -la /tmp\\nsecond line"}}' | SESSION_LOG_DIR="$LOGS" python3 "$SLG/log.py" tool
+assert_contains "tool: bash command logged (first line only)" '$ ls -la /tmp' "$LF"
+assert_absent  "tool: second bash line not logged" "second line" "$LF"
+
+printf '{"tool_name":"Write","tool_input":{"file_path":"/proj/x/readme.md"}}' | SESSION_LOG_DIR="$LOGS" python3 "$SLG/log.py" tool
+assert_contains "tool: write path logged" "Write /proj/x/readme.md" "$LF"
+
+printf '{"session_id":"abcdef123456"}' | SESSION_LOG_DIR="$LOGS" python3 "$SLG/log.py" stop
+assert_contains "stop: stop line logged" "session abcdef12 stop" "$LF"
+
+printf 'not json' | SESSION_LOG_DIR="$LOGS" python3 "$SLG/log.py" tool
+assert_exit "malformed stdin -> exit 0 (no crash)" 0 $?
+
 echo
 echo "-------------------------------------"
 printf 'passed: %s   failed: %s\n' "$pass" "$fail"

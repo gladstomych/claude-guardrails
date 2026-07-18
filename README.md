@@ -1,11 +1,13 @@
 # claude-guardrails
 
-A small Claude Code plugin marketplace. Two plugins, one job each.
+A small Claude Code plugin marketplace. Several plugins, one job each.
 
 | Plugin | Job | Mechanism |
 | :----- | :-- | :-------- |
 | [`emdash-guard`](plugins/emdash-guard) | Keep em dashes out of files Claude writes | `PostToolUse` hook on `Write`/`Edit`/`NotebookEdit` runs a deterministic checker; on a hit it asks Claude to rewrite with real punctuation |
 | [`commit-guard`](plugins/commit-guard) | Keep `Co-Authored-By: Claude` out of commits | `PreToolUse` hook blocks a `git commit` carrying the trailer; a git `commit-msg` backstop strips it for cases the tool layer can't see |
+| [`commit-style`](plugins/commit-style) | Nudge commits toward Conventional Commits | A warning-only git `commit-msg` hook. A guide, not a guard: it never blocks, it only reminds |
+| [`session-logger`](plugins/session-logger) | Keep a log of what each session did | `SessionStart` / `PostToolUse` / `Stop` hooks append a per-day markdown log of file writes and bash commands |
 
 ## Install
 
@@ -13,9 +15,11 @@ A small Claude Code plugin marketplace. Two plugins, one job each.
 /plugin marketplace add gladstomych/claude-guardrails
 /plugin install emdash-guard@claude-guardrails
 /plugin install commit-guard@claude-guardrails
+/plugin install commit-style@claude-guardrails
+/plugin install session-logger@claude-guardrails
 ```
 
-Install either one on its own; they are independent.
+Install any one on its own; they are independent.
 
 ### commit-guard: two layers
 
@@ -54,6 +58,37 @@ native setting in `~/.claude/settings.json`:
 
 commit-guard then only has to catch the occasional case where Claude adds the
 trailer anyway via the Bash tool.
+
+### commit-style: a guide, not a guard
+
+`commit-style` warns when a commit subject is not Conventional Commits format
+(`type(scope): summary`), but it never blocks. Install it per repo:
+
+```shell
+/commit-style:install-git-hook
+```
+
+It chains cleanly alongside commit-guard's backstop (both run). Merge, revert,
+fixup, and squash messages are left alone.
+
+### session-logger: where the logs go
+
+Once enabled, `session-logger` writes one markdown file per day. Default location
+is `~/.claude/session-logs/YYYY-MM-DD.md`; set `SESSION_LOG_DIR` to change it. Each
+session gets a header, then one line per file write or bash command, then a stop
+line. It only ever appends and always exits 0, so it cannot block or slow a session.
+
+## Companion tools (not in this marketplace)
+
+Two needs are better served by things that already exist, so this repo just points
+at them:
+
+- **Keep secrets out of Claude:** [`sensitive-canary`](https://github.com/coo-quack/sensitive-canary)
+  (MIT) blocks `.env` files and secret/PII values in reads, bash output, and prompts.
+  Requires Node.js 22.6+.
+- **Notify when a run finishes:** Claude Code's built-in **Channels** feature sends
+  notifications to Slack, Discord, Telegram, Microsoft Teams, ntfy, PagerDuty, and
+  custom webhooks, with per-status and per-branch filtering. No plugin needed.
 
 ## Development
 

@@ -1,0 +1,8 @@
+{
+  "name": "commit-style",
+  "description": "A guide, not a guard: warns when a commit subject is not Conventional Commits format, but never blocks the commit.",
+  "version": "0.1.0",
+  "author": {
+    "name": "gladstomych"
+  }
+}

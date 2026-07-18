@@ -14,6 +14,16 @@
       "name": "commit-guard",
       "source": "./plugins/commit-guard",
       "description": "Blocks git commits carrying a Co-Authored-By: Claude trailer, at the Claude tool layer, with a git commit-msg backstop you can install per repo."
+    },
+    {
+      "name": "commit-style",
+      "source": "./plugins/commit-style",
+      "description": "Guide, not a guard: warns (never blocks) when a commit subject is not Conventional Commits format. Installed as a per-repo commit-msg hook."
+    },
+    {
+      "name": "session-logger",
+      "source": "./plugins/session-logger",
+      "description": "Appends a per-day markdown log of each session: start, file writes, bash commands, and stop. Never blocks."
     }
   ]
 }
