@@ -30,12 +30,15 @@ exercise the git-level hooks end to end.
 Two enforcement layers, deliberately distinct:
 
 - **Tool layer** (`hooks/hooks.json` + a Python script). Fires on Claude's tool
-  calls. Sees only what is in the tool payload. Two ways to report a verdict:
-  exit **2** with stderr (used by `commit-guard`, a pure block), or exit **0**
-  with JSON on stdout (used by `emdash-guard`, because it also needs to say
-  something to the user). In the JSON form, `decision: "block"` plus `reason`
-  goes to Claude and `systemMessage` goes to the user; omit the decision to
-  report without interrupting. Both paths are verified against the live harness.
+  calls. Sees only what is in the tool payload. Every guard exits **0** and puts
+  its verdict in JSON on stdout, because exit-2-with-stderr reaches Claude only
+  and leaves the user staring at a guard that looks uninstalled. The shapes
+  differ by event and both are verified against the live harness:
+  - `PreToolUse`: `hookSpecificOutput.permissionDecision: "deny"` plus
+    `permissionDecisionReason` for Claude (`commit-guard`, `push-guard`).
+  - `PostToolUse`: `decision: "block"` plus `reason` for Claude (`emdash-guard`).
+  - Either way, `systemMessage` is the line the user sees. Omit the decision to
+    report without interrupting.
 - **Git layer** (`scripts/commit-msg*` + `scripts/install-git-hook.sh`, installed
   per repo by a slash command). Catches what the tool layer structurally cannot see:
   `git commit -F file`, editor commits, commits made outside Claude.
@@ -43,6 +46,9 @@ Two enforcement layers, deliberately distinct:
 `commit-guard` is the only plugin with both. `emdash-guard` and `session-logger`
 are tool-layer only; `commit-style` is git-layer only (no `hooks.json`);
 `plugin-vet` is a slash command plus a standalone scanner (no hooks at all).
+`push-guard` has both layers as well: `PreToolUse` on Bash for pushes Claude
+makes, and a `pre-push` hook whose installer copies the scanner next to it so the
+hook survives a plugin update or uninstall.
 
 Registration is by hand in two places for every plugin: `.claude-plugin/marketplace.json`
 at repo root (name, `./plugins/<name>` source, description) and
@@ -64,6 +70,25 @@ Hook commands always reference scripts as `python3 "${CLAUDE_PLUGIN_ROOT}"/scrip
   falls back rather than raising. `tests/smoke.sh` points `CLAUDE_CONFIG_DIR` at
   a temp dir, so add config-reading scripts to that isolation or tests will read
   the developer's real settings.
+- **A guard that fires is visible, a guard that passes is quiet about
+  irrelevant calls.** Blocks always carry a `systemMessage`. Passes report too,
+  by default, but only for a call the guard actually acted on: `commit-guard` and
+  `push-guard` hook every Bash call and must stay silent unless the command really
+  is a `git commit` / `git push`, and `emdash-guard` must not mention a file its
+  extension filter skipped. `<PLUGIN>_VERBOSE=0` or `GUARDRAILS_VERBOSE=0` silences
+  pass notices only; nothing silences a block.
+- **Notices follow one house style, defined in `hookout.py`.** `<plugin>: <symbol>
+  <message>`, bold cyan name, body coloured by level (block red `x`, warn yellow
+  `!`, ask magenta `?`, ok green `+`, info dim). Read the STYLE GUIDE docstring at
+  the top of that file before adding a notice, including the wording rules. Colour
+  is never gated on `isatty` (a hook's stdout is always a pipe) and always
+  degrades: `NO_COLOR` or `GUARDRAILS_COLOR=0` drops colour, keeps symbols. Verified
+  rendering in the real client, so do not "fix" it by switching to markdown or
+  emoji without testing there first.
+- **`hookout.py` is copied, not shared.** Each guard plugin carries its own byte
+  identical copy, because the plugins are independently installable and none may
+  import from another. Change one, copy it to the others, or they drift; a smoke
+  test `cmp`s the three copies.
 - **Git hook installers chain, never clobber.** `install-git-hook.sh` honours
   `core.hooksPath`, moves an existing `commit-msg` aside to
   `commit-msg.pre-commit-guard` and calls it, and is idempotent on re-run.

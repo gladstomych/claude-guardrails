@@ -1,7 +1,7 @@
 {
   "name": "emdash-guard",
   "description": "Counts em dashes and stand-in dashes in files Claude writes and reports them back; autofix mode (on / off / prompt) is set with /emdash-guard:autofix.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {
     "name": "gladstomych"
   }

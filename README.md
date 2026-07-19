@@ -60,6 +60,57 @@ Which files get checked is separate, and still controlled by
 `EMDASH_GUARD_EXTENSIONS` (default: markdown and plain-text extensions; `*` checks
 everything).
 
+### Seeing the guards work
+
+Every guard reports both ways: one styled line to you, the detail Claude needs to
+act to Claude. A block is never silent, and a passing check says so too, because a
+silent guard is indistinguishable from an absent one.
+
+Each notice is `<plugin>: <symbol> <message>`. The plugin name is bold cyan in
+every plugin, so a glance tells you a guardrail spoke and which one. The body
+colour and the symbol say what happened:
+
+| Level | Colour | Symbol | Meaning |
+| :---- | :----- | :----- | :------ |
+| block | bold red | `x` | refused, the action did not happen |
+| warn | yellow | `!` | stopped on a softer signal, or allowed with a caveat |
+| ask | bold magenta | `?` | stopped, waiting on a decision from you |
+| ok | green | `+` | checked, nothing wrong |
+| info | dim grey | | neutral status, nothing to act on |
+
+```
+emdash-guard: + checked CLAUDE.md, no em dashes.
+commit-guard: + checked the message, no Claude trailer.
+push-guard: + unpushed commits scanned, clean.
+emdash-guard: x 3 em dashes / stand-in dashes in README.md, fixing.
+emdash-guard: ? 1 em dash / stand-in dash in draft.md, asking before fixing.
+emdash-guard: ! 1 em dash / stand-in dash in draft.md, not fixing.
+commit-guard: x blocked a commit carrying a Claude co-author trailer.
+push-guard: x blocked a push, 1 secret in the commits (cfg.py: AWS access key id).
+push-guard: ! blocked a push, 2 suspicious changes to check first.
+```
+
+The symbols are ASCII deliberately: they survive a log file, a pipe, and a reader
+who cannot tell red from green. Set `NO_COLOR` (any value) or `GUARDRAILS_COLOR=0`
+and the colour drops while the symbols keep carrying severity.
+
+A guard only ever speaks about a call it actually acted on: the file it checked,
+the `git commit` or `git push` it scanned. `commit-guard` and `push-guard` run on
+every Bash call and stay quiet on all the rest, so `ls` is never narrated, and
+`emdash-guard` says nothing about files outside its extension filter.
+
+Turn the pass notices off (blocks are never silenced):
+
+```shell
+GUARDRAILS_VERBOSE=0        # every guard
+COMMIT_GUARD_VERBOSE=0      # or one at a time
+PUSH_GUARD_VERBOSE=0
+EMDASH_GUARD_VERBOSE=0
+```
+
+The per-plugin setting wins over the global one, so `GUARDRAILS_VERBOSE=0
+PUSH_GUARD_VERBOSE=1` keeps only push-guard talking.
+
 ### commit-guard: two layers
 
 The `PreToolUse` hook is automatic once the plugin is enabled. For the git-level

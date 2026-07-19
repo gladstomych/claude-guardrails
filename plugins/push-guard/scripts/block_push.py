@@ -3,7 +3,8 @@
 
 Claude Code runs this before every Bash tool call (see hooks.json). If the command
 is a `git push`, it scans the commits that push would send (see scan_push.py) and
-exits 2 to block on any finding, handing the findings back to Claude.
+blocks on any finding, handing the detail to Claude and a one-line summary to the
+user, so a block is never silent.
 
 This is the tool-layer guard, so it only covers pushes Claude makes. The git
 pre-push hook (scripts/pre-push, installed per repo) covers pushes made from a
@@ -13,6 +14,11 @@ Both severities block. A HIGH is a shaped credential or a conflict marker; a MED
 is suspicious enough to be worth a human look. Over-blocking is the intended
 failure direction, and the escape hatch is deliberate and visible:
 PUSH_GUARD_SKIP=1 in the environment.
+
+A clean scan is reported too, so the guard is visible when it is working. That
+only happens on an actual push: this hook runs on every Bash call and must not
+narrate unrelated commands. Silence it with PUSH_GUARD_VERBOSE=0, or
+GUARDRAILS_VERBOSE=0 for every guard.
 """
 
 import json
@@ -21,7 +27,8 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from scan_push import HIGH, scan, verdict  # noqa: E402
+from hookout import deny, note, verbose  # noqa: E402
+from scan_push import HIGH, scan  # noqa: E402
 
 # A git push in some form: `git push`, `git -C dir push`, `git push --force`.
 # Deliberately loose, matching commit-guard's fail-safe stance: a false positive
@@ -55,34 +62,40 @@ def main():
     except Exception:  # noqa: BLE001 - a scanner bug must not wedge the session
         return 0
 
-    if base is None or not findings:
-        return 0
+    if base is None:
+        return note("push-guard", "nothing unpushed to scan.", "info") \
+            if verbose("PUSH_GUARD") else 0
+
+    if not findings:
+        return note("push-guard", "unpushed commits scanned, clean.") if verbose("PUSH_GUARD") else 0
 
     high = [f for f in findings if f[0] == HIGH]
     kind = "secret or blocker" if high else "suspicious change"
-    sys.stderr.write(
-        f"push-guard: refusing this push, {len(findings)} {kind}"
-        f"{'' if len(findings) == 1 else 's'} in the commits it would send.\n\n"
-    )
+    plural = "" if len(findings) == 1 else "s"
+
+    lines = [f"push-guard: refusing this push, {len(findings)} {kind}{plural} "
+             "in the commits it would send.", ""]
     for sev, path, line_no, why, excerpt in findings:
         where = f"{path}:{line_no}" if line_no else path
-        sys.stderr.write(f"{sev:4} {where}: {why}\n")
+        lines.append(f"{sev:4} {where}: {why}")
         if excerpt:
-            sys.stderr.write(f"       {excerpt}\n")
+            lines.append(f"       {excerpt}")
 
     if high:
-        sys.stderr.write(
-            "\nDo not push this. Remove the credential from the commits (rewriting "
-            "history, not just adding a follow-up commit, since the old commit still "
-            "carries it), and rotate anything that was real. Tell the user what was "
-            "found and let them decide.\n"
-        )
+        lines += ["", "Do not push this. Remove the credential from the commits "
+                  "(rewriting history, not just adding a follow-up commit, since the "
+                  "old commit still carries it), and rotate anything that was real. "
+                  "Tell the user what was found and let them decide."]
+        summary = (f"blocked a push, {len(high)} secret{'' if len(high) == 1 else 's'} "
+                   f"in the commits ({findings[0][1]}: {findings[0][3]}).")
     else:
-        sys.stderr.write(
-            "\nShow the user these findings and ask whether to push anyway. If they "
-            "confirm it is fine, re-run the push with PUSH_GUARD_SKIP=1 set.\n"
-        )
-    return 2  # block, and feed this back to Claude
+        lines += ["", "Show the user these findings and ask whether to push anyway. "
+                  "If they confirm it is fine, re-run the push with PUSH_GUARD_SKIP=1 set."]
+        summary = (f"blocked a push, {len(findings)} suspicious "
+                   f"change{plural} to check first.")
+
+    return deny("\n".join(lines), "push-guard", summary,
+                "block" if high else "warn")
 
 
 if __name__ == "__main__":

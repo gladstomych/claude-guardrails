@@ -1,7 +1,7 @@
 {
   "name": "push-guard",
   "description": "Refuses a git push whose commits carry secrets, credential files, conflict markers, or not-ready work, at the Claude tool layer, with a git pre-push backstop you can install per repo.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": {
     "name": "gladstomych"
   }

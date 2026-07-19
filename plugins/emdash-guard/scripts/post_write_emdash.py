@@ -12,6 +12,10 @@ Autofix mode (see scripts/autofix_mode.py and /emdash-guard:autofix):
   off     never block; only show the user the count
   prompt  block, but have Claude ask the user before rewriting anything
 
+A clean file is reported as clean, so the guard is visible when it is working;
+silence that with EMDASH_GUARD_VERBOSE=0 or GUARDRAILS_VERBOSE=0. Only files the
+hook actually checked are ever mentioned.
+
 Scope: only files whose extension is in TEXT_EXTENSIONS are checked, so prose gets
 guarded without turning every source-code edit into noise. Override the set with
 the EMDASH_GUARD_EXTENSIONS env var (comma-separated, e.g. ".md,.txt,.py"); set it
@@ -26,7 +30,9 @@ import os
 import subprocess
 import sys
 
-from autofix_mode import current_mode
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from autofix_mode import current_mode  # noqa: E402
+from hookout import style, verbose  # noqa: E402
 
 DEFAULT_EXTENSIONS = {
     ".md", ".markdown", ".mdx", ".txt", ".text", ".rst",
@@ -56,13 +62,14 @@ def count_hits(checker_stdout):
     return sum(1 for line in checker_stdout.splitlines() if ": found '" in line)
 
 
-def emit(system_message, reason=None):
+def emit(message, reason=None, level="ok"):
     """Write the hook's PostToolUse JSON verdict to stdout.
 
-    systemMessage is shown to the user; a decision of "block" hands `reason` back
-    to Claude to act on. Omitting the decision reports without interrupting.
+    systemMessage is shown to the user, styled like every other guard in the
+    suite; a decision of "block" hands `reason` back to Claude to act on.
+    Omitting the decision reports without interrupting.
     """
-    out = {"systemMessage": system_message}
+    out = {"systemMessage": style("emdash-guard", message, level)}
     if reason is not None:
         out["decision"] = "block"
         out["reason"] = reason
@@ -94,6 +101,8 @@ def main():
         return 0  # checker unavailable: fail open, do not block the workflow
 
     if result.returncode != 1:  # 1 == dashes found; anything else == clean or broken
+        if result.returncode == 0 and verbose("EMDASH_GUARD"):
+            emit(f"checked {os.path.basename(path)}, no em dashes.")
         return 0
 
     count = count_hits(result.stdout)
@@ -102,23 +111,25 @@ def main():
     mode = current_mode()
 
     if mode == "off":
-        emit(f"emdash-guard: {count} {noun} in {name} (autofix off, not fixing)")
+        emit(f"{count} {noun} in {name}, not fixing.", level="warn")
         return 0
 
     detail = f"emdash-guard: {count} {noun} found in {path}\n\n{result.stdout}\n"
 
     if mode == "prompt":
         emit(
-            f"emdash-guard: {count} {noun} in {name} (asking before fixing)",
+            f"{count} {noun} in {name}, asking before fixing.",
             detail + "Autofix is set to 'prompt'. Ask the user with AskUserQuestion: "
             f"\"Remove the {count} em dashes in {name}?\" Rewrite the file only if "
             f"they say yes, and leave it exactly as written if they decline. {REWRITE}",
+            level="ask",
         )
         return 0
 
     emit(
-        f"emdash-guard: {count} {noun} in {name} (fixing)",
+        f"{count} {noun} in {name}, fixing.",
         detail + REWRITE + " Then save the file again.",
+        level="block",
     )
     return 0
 

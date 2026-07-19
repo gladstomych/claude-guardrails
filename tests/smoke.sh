@@ -69,12 +69,13 @@ echo "== emdash-guard PostToolUse (post_write_emdash.py) =="
 #   .decision       "block" when Claude should act, absent when it should not
 # jq-free field read: <field> from $WORK/stdout, empty string if absent.
 hook_field() {
-    python3 -c 'import json,sys
+    python3 -c 'import json,re,sys
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
     d = {}
-print(d.get(sys.argv[2], "") if isinstance(d, dict) else "")' "$WORK/stdout" "$1"
+v = d.get(sys.argv[2], "") if isinstance(d, dict) else ""
+print(re.sub(r"\x1b\[[0-9;]*m", "", v) if isinstance(v, str) else v)' "$WORK/stdout" "$1"
 }
 # assert_field <name> <field> <expected>
 assert_field() {
@@ -92,7 +93,7 @@ run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
 assert_exit "md with em dash -> exit 0 (verdict is in the JSON)" 0 "$RC"
 assert_field "md with em dash -> decision block" decision block
 assert_field_has "reason names the file" reason "$f"
-assert_field_has "systemMessage counts 1 dash" systemMessage "emdash-guard: 1 em dash"
+assert_field_has "systemMessage counts 1 dash" systemMessage "1 em dash"
 
 # Counter: three dashes on two lines are reported as three.
 f="$WORK/three.md"; printf 'a %s b and c %s d\nthen e %s f\n' "$EMDASH" "$EMDASH" "$EMDASH" > "$f"
@@ -108,10 +109,15 @@ f="$WORK/good.md"; printf 'clean prose, honest punctuation.\n' > "$f"
 run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
 assert_exit "clean md -> pass (0)" 0 "$RC"
 assert_field "clean md -> no decision" decision ""
+assert_field_has "clean md -> reported clean by default" systemMessage "checked good.md"
+
+printf '%s' "$(json_write "$f")" | EMDASH_GUARD_VERBOSE=0 python3 "$EMD/post_write_emdash.py" >"$WORK/stdout" 2>/dev/null
+[ -s "$WORK/stdout" ] && bad "EMDASH_GUARD_VERBOSE=0 still spoke on a clean file" || ok "EMDASH_GUARD_VERBOSE=0 silences the clean notice"
 
 f="$WORK/code.py"; printf 'x = 1  # a note %s really\n' "$EMDASH" > "$f"
 run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
 assert_field ".py skipped by default extension filter -> no decision" decision ""
+[ -s "$WORK/stdout" ] && bad "skipped file: guard narrated a file it never checked" || ok "skipped file: guard stays quiet"
 
 f="$WORK/code2.py"; printf 'x = 1  # a note %s really\n' "$EMDASH" > "$f"
 printf '%s' "$(json_write "$f")" | EMDASH_GUARD_EXTENSIONS='*' python3 "$EMD/post_write_emdash.py" >"$WORK/stdout" 2>/dev/null
@@ -151,7 +157,7 @@ run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
 assert_exit "mode off -> exit 0" 0 "$RC"
 assert_field "mode off -> no decision (never blocks)" decision ""
 assert_field_has "mode off -> still counts for the user" systemMessage "1 em dash"
-assert_field_has "mode off -> says it is not fixing" systemMessage "autofix off"
+assert_field_has "mode off -> says it is not fixing" systemMessage "not fixing"
 
 python3 "$MODE" prompt >/dev/null 2>&1
 f="$WORK/promptmode.md"; printf 'a %s b\n' "$EMDASH" > "$f"
@@ -195,25 +201,87 @@ python3 "$MODE" on >/dev/null 2>&1
 echo "== commit-guard PreToolUse (block_coauthor.py) =="
 
 json_bash() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$1"; }
+# PreToolUse guards answer with JSON on stdout: the decision for Claude, the
+# systemMessage for the user. Read either out of $WORK/stdout.
+pre_decision() {
+    python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+h = d.get("hookSpecificOutput", {}) if isinstance(d, dict) else {}
+print(h.get("permissionDecision", ""))' "$WORK/stdout"
+}
+pre_field() {
+    python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+h = d.get("hookSpecificOutput", {}) if isinstance(d, dict) else {}
+print(d.get(sys.argv[2], "") or h.get("permissionDecisionReason", "") if sys.argv[2] == "reason" else d.get(sys.argv[2], ""))' "$WORK/stdout" "$2"
+}
+# assert_deny <name> <expected: deny|"">
+assert_deny() {
+    got=$(pre_decision)
+    if [ "$got" = "$2" ]; then ok "$1"; else bad "$1 (want decision '$2', got '$got')"; fi
+}
+# assert_reason <name> <needle>   /   assert_sysmsg <name> <needle>
+assert_reason() {
+    python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+print(d.get("hookSpecificOutput", {}).get("permissionDecisionReason", ""))' "$WORK/stdout" > "$WORK/reason" 2>/dev/null || : > "$WORK/reason"
+    assert_contains "$1" "$2" "$WORK/reason"
+}
+assert_sysmsg() {
+    python3 -c 'import json,re,sys
+d = json.load(open(sys.argv[1]))
+print(re.sub(r"\x1b\[[0-9;]*m", "", d.get("systemMessage", "")))' \
+        "$WORK/stdout" > "$WORK/sysmsg" 2>/dev/null || : > "$WORK/sysmsg"
+    assert_contains "$1" "$2" "$WORK/sysmsg"
+}
+# Raw systemMessage, escape codes intact, for the styling assertions.
+raw_sysmsg() {
+    python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+sys.stdout.write(d.get("systemMessage", "") if isinstance(d, dict) else "")' "$WORK/stdout"
+}
+# assert_styled <name> <needle>  (needle is a literal escape sequence or symbol)
+assert_styled() {
+    raw_sysmsg > "$WORK/raw"
+    assert_contains "$1" "$2" "$WORK/raw"
+}
+assert_unstyled() {
+    raw_sysmsg > "$WORK/raw"
+    assert_absent "$1" "$2" "$WORK/raw"
+}
 # jq-free JSON string encoder for a command containing newlines/quotes.
 jstr() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
 
 cmd=$(printf 'git commit -m "feat: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"' | jstr)
 run_hook "$CMG/block_coauthor.py" "$(json_bash "$cmd")"
-assert_exit "git commit + Claude trailer -> block (2)" 2 "$RC"
-assert_contains "block message explains" "commit-guard" "$STDERR_FILE"
+assert_exit "git commit + Claude trailer -> exit 0 (verdict is in the JSON)" 0 "$RC"
+assert_deny "git commit + Claude trailer -> deny" deny
+assert_reason "deny reason explains, for Claude" "commit-guard"
+assert_sysmsg "user sees a one-line summary" "blocked a commit"
 
 cmd=$(printf 'git commit -m "feat: x\n\nClaude-Session: https://claude.ai/x"' | jstr)
 run_hook "$CMG/block_coauthor.py" "$(json_bash "$cmd")"
-assert_exit "git commit + Claude-Session trailer -> block (2)" 2 "$RC"
+assert_deny "git commit + Claude-Session trailer -> deny" deny
 
 cmd=$(printf 'git commit -m "feat: x"' | jstr)
 run_hook "$CMG/block_coauthor.py" "$(json_bash "$cmd")"
 assert_exit "clean git commit -> pass (0)" 0 "$RC"
+assert_deny "clean git commit -> no decision" ""
+assert_sysmsg "clean git commit -> pass is reported by default" "no Claude trailer"
 
 cmd=$(printf 'git commit -m "feat: x\n\nCo-Authored-By: Dana Dev <dana@example.com>"' | jstr)
 run_hook "$CMG/block_coauthor.py" "$(json_bash "$cmd")"
 assert_exit "human co-author -> pass (0)" 0 "$RC"
+assert_deny "human co-author -> no decision" ""
 
 cmd=$(printf 'echo Co-Authored-By: Claude' | jstr)
 run_hook "$CMG/block_coauthor.py" "$(json_bash "$cmd")"
@@ -221,6 +289,25 @@ assert_exit "non-commit command mentioning trailer -> pass (0)" 0 "$RC"
 
 run_hook "$CMG/block_coauthor.py" '{"tool_name":"Read","tool_input":{"file_path":"x"}}'
 assert_exit "non-Bash tool -> pass (0)" 0 "$RC"
+
+# Visibility: a passing check speaks by default, but only for a relevant command.
+cmd=$(printf 'ls -la' | jstr)
+run_hook "$CMG/block_coauthor.py" "$(json_bash "$cmd")"
+[ -s "$WORK/stdout" ] && bad "unrelated command: guard narrated 'ls'" || ok "unrelated command: guard stays quiet"
+
+cmd=$(printf 'git commit -m "feat: x"' | jstr)
+printf '%s' "$(json_bash "$cmd")" | COMMIT_GUARD_VERBOSE=0 python3 "$CMG/block_coauthor.py" >"$WORK/stdout" 2>/dev/null
+[ -s "$WORK/stdout" ] && bad "COMMIT_GUARD_VERBOSE=0 still spoke" || ok "COMMIT_GUARD_VERBOSE=0 silences the pass notice"
+
+printf '%s' "$(json_bash "$cmd")" | GUARDRAILS_VERBOSE=0 python3 "$CMG/block_coauthor.py" >"$WORK/stdout" 2>/dev/null
+[ -s "$WORK/stdout" ] && bad "GUARDRAILS_VERBOSE=0 still spoke" || ok "GUARDRAILS_VERBOSE=0 silences every guard"
+
+printf '%s' "$(json_bash "$cmd")" | GUARDRAILS_VERBOSE=0 COMMIT_GUARD_VERBOSE=1 python3 "$CMG/block_coauthor.py" >"$WORK/stdout" 2>/dev/null
+assert_sysmsg "per-plugin setting beats the global one" "no Claude trailer"
+
+cmd=$(printf 'git commit -m "feat: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"' | jstr)
+printf '%s' "$(json_bash "$cmd")" | GUARDRAILS_VERBOSE=0 python3 "$CMG/block_coauthor.py" >"$WORK/stdout" 2>/dev/null
+assert_deny "verbose=0 never silences a block" deny
 
 run_hook "$CMG/block_coauthor.py" 'garbage'
 assert_exit "malformed JSON -> pass (0)" 0 "$RC"
@@ -413,25 +500,42 @@ json_bash_cwd() { # <command-json-string> <cwd>
 
 cmd=$(printf 'git push origin master' | jstr)
 run_hook "$PSH/block_push.py" "$(json_bash_cwd "$cmd" "$P4")"
-assert_exit "push from a repo with a private key -> block (2)" 2 "$RC"
-assert_contains "block message explains" "push-guard" "$STDERR_FILE"
-assert_contains "block message names the finding" "private key block" "$STDERR_FILE"
-assert_contains "HIGH advice: rewrite history, rotate" "rotate" "$STDERR_FILE"
+assert_exit "push from a repo with a private key -> exit 0 (verdict in JSON)" 0 "$RC"
+assert_deny "push carrying a private key -> deny" deny
+assert_reason "deny reason names the finding" "private key block"
+assert_reason "HIGH advice: rewrite history, rotate" "rotate"
+assert_sysmsg "user sees a one-line block summary" "blocked a push"
 
 run_hook "$PSH/block_push.py" "$(json_bash_cwd "$cmd" "$P11")"
 assert_exit "push from a clean repo -> pass (0)" 0 "$RC"
+assert_deny "clean repo -> no deny" ""
+assert_sysmsg "clean push is reported by default" "scanned, clean"
 
 run_hook "$PSH/block_push.py" "$(json_bash_cwd "$cmd" "$P8")"
-assert_exit "push with only a MED finding -> block (2)" 2 "$RC"
-assert_contains "MED advice offers the override" "PUSH_GUARD_SKIP=1" "$STDERR_FILE"
+assert_deny "push with only a MED finding -> deny" deny
+assert_reason "MED advice offers the override" "PUSH_GUARD_SKIP=1"
+assert_sysmsg "MED block summary says what to check" "suspicious"
 
 cmd=$(printf 'git push --dry-run origin master' | jstr)
 run_hook "$PSH/block_push.py" "$(json_bash_cwd "$cmd" "$P4")"
 assert_exit "--dry-run sends nothing -> pass (0)" 0 "$RC"
+assert_deny "--dry-run -> no deny" ""
 
 cmd=$(printf 'git status' | jstr)
 run_hook "$PSH/block_push.py" "$(json_bash_cwd "$cmd" "$P4")"
 assert_exit "non-push git command -> pass (0)" 0 "$RC"
+[ -s "$WORK/stdout" ] && bad "non-push command: guard narrated it" || ok "non-push command: guard stays quiet"
+
+cmd=$(printf 'ls -la' | jstr)
+run_hook "$PSH/block_push.py" "$(json_bash_cwd "$cmd" "$P11")"
+[ -s "$WORK/stdout" ] && bad "unrelated command: push-guard narrated 'ls'" || ok "unrelated command: push-guard stays quiet"
+
+cmd=$(printf 'git push origin master' | jstr)
+printf '%s' "$(json_bash_cwd "$cmd" "$P11")" | PUSH_GUARD_VERBOSE=0 python3 "$PSH/block_push.py" >"$WORK/stdout" 2>/dev/null
+[ -s "$WORK/stdout" ] && bad "PUSH_GUARD_VERBOSE=0 still spoke on a clean push" || ok "PUSH_GUARD_VERBOSE=0 silences the pass notice"
+
+printf '%s' "$(json_bash_cwd "$cmd" "$P4")" | PUSH_GUARD_VERBOSE=0 python3 "$PSH/block_push.py" >"$WORK/stdout" 2>/dev/null
+assert_deny "PUSH_GUARD_VERBOSE=0 never silences a block" deny
 
 cmd=$(printf 'git push origin master' | jstr)
 STDERR_FILE="$WORK/stderr"
@@ -490,6 +594,55 @@ chmod +x "$R6/.git/hooks/pre-push"
 ( cd "$R6" && git push origin master >/dev/null 2>&1 ); rc=$?
 [ -f "$R6/existing-ran" ] && ok "chain: existing hook still ran" || bad "chain: existing hook did not run"
 [ "$rc" -ne 0 ] && ok "chain: backstop still blocked the push" || bad "chain: push was allowed"
+
+echo "== notice styling (hookout.py house style) =="
+cmd_trailer=$(printf 'git commit -m "feat: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"' | jstr)
+
+ESC=$(printf '\033')
+CMD_CLEAN=$(printf 'git commit -m "feat: x"' | jstr)
+
+# Levels: the plugin name is bold cyan everywhere, the body colour says what
+# happened, and the ASCII symbol carries severity when colour is gone.
+run_hook "$CMG/block_coauthor.py" "$(json_bash "$CMD_CLEAN")"
+assert_styled "ok: plugin name is bold cyan" "${ESC}[1;36mcommit-guard${ESC}[0m"
+assert_styled "ok: body is green" "${ESC}[32m"
+assert_styled "ok: carries the + symbol" "+ checked"
+
+run_hook "$CMG/block_coauthor.py" "$(json_bash "$cmd_trailer")"
+assert_styled "block: body is bold red" "${ESC}[1;31m"
+assert_styled "block: carries the x symbol" "x blocked"
+
+p_push=$(printf 'git push origin master' | jstr)
+run_hook "$PSH/block_push.py" "$(json_bash_cwd "$p_push" "$P8")"
+assert_styled "warn: MED block is yellow" "${ESC}[33m"
+assert_styled "warn: carries the ! symbol" "! blocked"
+
+f="$WORK/askmode.md"; printf 'a %s b\n' "$EMDASH" > "$f"
+printf '%s' "$(json_write "$f")" | EMDASH_GUARD_AUTOFIX=prompt python3 "$EMD/post_write_emdash.py" >"$WORK/stdout" 2>/dev/null
+assert_styled "ask: body is bold magenta" "${ESC}[1;35m"
+assert_styled "ask: carries the ? symbol" "? 1 em dash"
+
+run_hook "$PSH/block_push.py" "$(json_bash_cwd "$p_push" "$P1")"
+assert_styled "info: body is dim" "${ESC}[2m"
+
+# NO_COLOR and GUARDRAILS_COLOR=0 drop the colour but keep the symbol.
+printf '%s' "$(json_bash "$CMD_CLEAN")" | NO_COLOR=1 python3 "$CMG/block_coauthor.py" >"$WORK/stdout" 2>/dev/null
+assert_unstyled "NO_COLOR: no escape codes" "$ESC"
+assert_sysmsg "NO_COLOR: symbol survives" "+ checked"
+
+printf '%s' "$(json_bash "$CMD_CLEAN")" | GUARDRAILS_COLOR=0 python3 "$CMG/block_coauthor.py" >"$WORK/stdout" 2>/dev/null
+assert_unstyled "GUARDRAILS_COLOR=0: no escape codes" "$ESC"
+
+printf '%s' "$(json_bash "$cmd_trailer")" | NO_COLOR=1 python3 "$CMG/block_coauthor.py" >"$WORK/stdout" 2>/dev/null
+assert_deny "NO_COLOR never silences a block" deny
+assert_sysmsg "NO_COLOR: block symbol survives" "x blocked"
+
+# Every plugin ships the same helper: drift here is a bug.
+if cmp -s "$CMG/hookout.py" "$PSH/hookout.py" && cmp -s "$CMG/hookout.py" "$EMD/hookout.py"; then
+    ok "hookout.py is byte-identical across the three guards"
+else
+    bad "hookout.py copies have drifted"
+fi
 
 echo "== session-logger (log.py) =="
 SLG="$ROOT/plugins/session-logger/scripts"

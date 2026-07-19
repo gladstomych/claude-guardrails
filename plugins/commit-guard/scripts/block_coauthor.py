@@ -4,7 +4,8 @@
 Claude Code runs this before every Bash tool call (see hooks.json). It reads the
 tool-call JSON on stdin, and if the command is a `git commit` whose message text
 contains a `Co-Authored-By: Claude ...` trailer (or a `Claude-Session:` line),
-it exits 2 to block the call and tells Claude to drop the attribution and retry.
+it blocks the call, tells Claude to drop the attribution and retry, and tells the
+user in one line that a commit was stopped, so the guard is visible when it fires.
 
 This is the tool-layer guard. It only sees trailers passed inline on the command
 line (e.g. `git commit -m "...\n\nCo-Authored-By: Claude ..."`). A message supplied
@@ -13,8 +14,12 @@ commit-msg backstop (scripts/commit-msg, installed per repo) covers that path.
 """
 
 import json
+import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hookout import deny, note, verbose  # noqa: E402
 
 # A git commit in some form: `git commit`, `git   commit`, `git commit -a`, etc.
 GIT_COMMIT = re.compile(r"\bgit\b[^\n|;&]*\bcommit\b", re.IGNORECASE)
@@ -40,14 +45,22 @@ def main():
     if not command:
         return 0
 
-    if GIT_COMMIT.search(command) and ATTRIBUTION.search(command):
-        sys.stderr.write(
+    is_commit = bool(GIT_COMMIT.search(command))
+
+    if is_commit and ATTRIBUTION.search(command):
+        return deny(
             "commit-guard: refusing this git commit.\n"
             "It carries a 'Co-Authored-By: Claude' (or 'Claude-Session:') trailer, "
             "and this policy forbids AI co-author attribution in commits.\n"
-            "Remove those trailer line(s) from the commit message and run the commit again.\n"
+            "Remove those trailer line(s) from the message and run the commit again. "
+            "Do not route around the guard.",
+            "commit-guard", "blocked a commit carrying a Claude co-author trailer.",
         )
-        return 2  # exit 2 blocks the tool call and feeds stderr back to Claude
+
+    # Report the pass too, so the guard is visible when it is working. Gated on
+    # is_commit: this hook sees every Bash call, and it must not narrate `ls`.
+    if is_commit and verbose("COMMIT_GUARD"):
+        return note("commit-guard", "checked the message, no Claude trailer.")
 
     return 0
 

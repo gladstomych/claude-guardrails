@@ -1,7 +1,7 @@
 {
   "name": "commit-guard",
   "description": "Refuses git commits that carry a Co-Authored-By: Claude trailer, and ships a git commit-msg backstop for the cases the tool layer can't see.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "author": {
     "name": "gladstomych"
   }
