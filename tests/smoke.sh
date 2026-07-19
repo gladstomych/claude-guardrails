@@ -165,6 +165,11 @@ run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
 assert_field "mode prompt -> decision block" decision block
 assert_field_has "mode prompt -> reason tells Claude to ask first" reason "AskUserQuestion"
 assert_field_has "mode prompt -> reason respects a no" "reason" "if they decline"
+assert_field_has "mode prompt -> question agrees in number (1 dash)" reason "Remove the 1 em dash in"
+
+f="$WORK/promptmany.md"; printf 'a %s b and c %s d\n' "$EMDASH" "$EMDASH" > "$f"
+run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
+assert_field_has "mode prompt -> question agrees in number (2 dashes)" reason "Remove the 2 em dashes in"
 assert_field_has "mode prompt -> systemMessage says it is asking" systemMessage "asking before fixing"
 
 python3 "$MODE" on >/dev/null 2>&1
@@ -491,6 +496,36 @@ assert_contains "nothing unpushed: says so" "nothing unpushed" "$WORK/p1b"
 
 python3 "$SCANP" --repo "$WORK/not-a-repo" >/dev/null 2>&1
 assert_exit "not a git repo -> exit 2" 2 $?
+
+
+# An assignment named for an AWS credential should at least warn, even when the
+# value itself is not key-shaped.
+P12="$WORK/push12"; mkdir -p "$P12"; ( cd "$P12" && git init -q )
+( cd "$P12" && printf 'aws_access_key_id = "notshapedlikeakey"\n' > c.py && git add c.py && \
+  git_env git commit -q -m "a" )
+python3 "$SCANP" --repo "$P12" > "$WORK/p12" 2>&1
+assert_exit "aws_access_key_id assignment -> exit 1 (MED)" 1 $?
+assert_contains "access_key assignment named" "hardcoded credential" "$WORK/p12"
+
+# A key-shaped string of the wrong length is the near-miss net, not a HIGH.
+BAD_LEN="AKIA""DEMOKEY1234567890"
+P13="$WORK/push13"; mkdir -p "$P13"; ( cd "$P13" && git init -q )
+( cd "$P13" && printf 'k = "%s"\n' "$BAD_LEN" > c.py && git add c.py && \
+  git_env git commit -q -m "a" )
+python3 "$SCANP" --repo "$P13" > "$WORK/p13" 2>&1
+assert_exit "AKIA with wrong length -> exit 1 (MED)" 1 $?
+assert_contains "wrong-length AKIA named" "wrong length for a real key id" "$WORK/p13"
+
+# The real shape is one HIGH, not a HIGH plus the loose MED on the same line.
+python3 "$SCANP" --repo "$P1" --range "$(cd "$P1" && git rev-list --max-parents=0 HEAD)^..HEAD" \
+    > "$WORK/p1dedupe" 2>&1 || true
+P14="$WORK/push14"; mkdir -p "$P14"; ( cd "$P14" && git init -q )
+( cd "$P14" && printf 'k = "%s"\n' "$AWS_KEY" > c.py && git add c.py && \
+  git_env git commit -q -m "a" )
+python3 "$SCANP" --repo "$P14" > "$WORK/p14" 2>&1
+assert_exit "correctly shaped AWS key -> exit 2 (HIGH)" 2 $?
+count=$(grep -c 'c.py:1' "$WORK/p14")
+[ "$count" = "1" ] && ok "one line, one verdict (no HIGH + MED duplicate)" || bad "line reported $count times, want 1"
 
 echo "== push-guard PreToolUse (block_push.py) =="
 

@@ -67,12 +67,21 @@ RULES = [
      "JSON Web Token"),
     (HIGH, re.compile(r'^(?:<{7}|>{7}) '),
      "unresolved merge conflict marker"),
+    # No word boundaries around the keyword: real identifiers wrap it, as in
+    # aws_access_key_id or my_api_key_2. Trailing [a-z0-9_]* lets the suffix
+    # through, and the leading side is left open on purpose.
     (MED, re.compile(
-        r'\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b'
+        r'(?:password|passwd|secret|api[_-]?key|access[_-]?key|secret[_-]?key|'
+        r'access[_-]?token|auth[_-]?token|private[_-]?key)[a-z0-9_]*'
         r'\s*[:=]\s*[\'"][^\'"]{8,}[\'"]', re.IGNORECASE),
      "hardcoded credential assignment"),
     (MED, re.compile(r'\bBEGIN CERTIFICATE\b'),
      "embedded certificate"),
+    # A real AWS key id is AKIA plus exactly 16, which the HIGH rule above
+    # catches. This is the near-miss net: padded, truncated, or mistyped
+    # variants that are still obviously somebody's key.
+    (MED, re.compile(r'\bAKIA[0-9A-Z]{8,}'),
+     "AWS-key-shaped string (wrong length for a real key id)"),
 ]
 
 # Only ever applied to MED findings: these read as documentation, not a leak.
@@ -188,11 +197,20 @@ def scan_content(cwd, base, head):
     seen = set()
     findings = []
     for path, line_no, text in added_lines(cwd, base, head):
+        hits = []
         for sev, rx, why in RULES:
             if not rx.search(text):
                 continue
             if sev == MED and PLACEHOLDER.search(text):
                 continue  # documentation, not a leak
+            hits.append((sev, why))
+
+        # One line, one verdict. A key that matches both the exact AWS rule and
+        # the loose fallback should read as one HIGH, not a HIGH plus a MED.
+        if any(sev == HIGH for sev, _ in hits):
+            hits = [h for h in hits if h[0] == HIGH]
+
+        for sev, why in hits:
             key = (sev, path, line_no, why)
             if key in seen:
                 continue

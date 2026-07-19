@@ -106,7 +106,9 @@ def main():
         return 0
 
     count = count_hits(result.stdout)
-    noun = "em dash / stand-in dash" if count == 1 else "em dashes / stand-in dashes"
+    singular = count == 1
+    noun = "em dash / stand-in dash" if singular else "em dashes / stand-in dashes"
+    short_noun = "em dash" if singular else "em dashes"
     name = os.path.basename(path)
     mode = current_mode()
 
@@ -120,7 +122,7 @@ def main():
         emit(
             f"{count} {noun} in {name}, asking before fixing.",
             detail + "Autofix is set to 'prompt'. Ask the user with AskUserQuestion: "
-            f"\"Remove the {count} em dashes in {name}?\" Rewrite the file only if "
+            f"\"Remove the {count} {short_noun} in {name}?\" Rewrite the file only if "
             f"they say yes, and leave it exactly as written if they decline. {REWRITE}",
             level="ask",
         )
