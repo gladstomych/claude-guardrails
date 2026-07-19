@@ -29,6 +29,11 @@
       "name": "plugin-vet",
       "source": "./plugins/plugin-vet",
       "description": "Security-review a plugin before installing it: /plugin-vet:vet runs a deterministic malware scan of its hooks and scripts, then an AI review, with a BLOCK / WARN / CLEAN verdict."
+    },
+    {
+      "name": "push-guard",
+      "source": "./plugins/push-guard",
+      "description": "Refuses a git push whose commits carry secrets, credential files, conflict markers, or not-ready work. Tool-layer hook plus a git pre-push backstop you can install per repo."
     }
   ]
 }

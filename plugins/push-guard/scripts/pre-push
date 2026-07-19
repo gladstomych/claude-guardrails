@@ -1,0 +1,60 @@
+#!/bin/sh
+# push-guard-backstop
+# git pre-push hook: scan the commits this push would send for secrets and
+# not-ready work. Blocks the push (exit 1) on any finding.
+#
+# git feeds us one line per ref on stdin:  <local ref> <local sha> <remote ref> <remote sha>
+# A zero local sha means the ref is being deleted, so there is nothing to scan.
+# A zero remote sha means the branch is new on the remote, so we let the scanner
+# work out the unpushed range itself rather than diffing against nothing.
+#
+# Bypass deliberately: `git push --no-verify`, or PUSH_GUARD_SKIP=1.
+
+set -u
+
+if [ "${PUSH_GUARD_SKIP:-}" != "" ] && [ "${PUSH_GUARD_SKIP:-}" != "0" ] \
+   && [ "${PUSH_GUARD_SKIP:-}" != "false" ]; then
+    exit 0
+fi
+
+hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+scanner="$hook_dir/push-guard-scan.py"
+
+# Installed alongside the hook; if it went missing, fail open rather than
+# stranding someone unable to push with no way to see why.
+if [ ! -f "$scanner" ]; then
+    echo "push-guard: scanner missing at $scanner, skipping the check." >&2
+    exit 0
+fi
+
+zero="0000000000000000000000000000000000000000"
+status=0
+scanned=0
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [ -z "${local_sha:-}" ] && continue
+    [ "$local_sha" = "$zero" ] && continue          # deleting a ref
+
+    if [ "${remote_sha:-$zero}" = "$zero" ]; then
+        python3 "$scanner" >&2 || status=$?          # new branch: unpushed range
+    else
+        python3 "$scanner" --range "$remote_sha..$local_sha" >&2 || status=$?
+    fi
+    scanned=$((scanned + 1))
+    [ "$status" -ne 0 ] && break
+done
+
+# Nothing on stdin (some callers invoke the hook bare): scan the unpushed range.
+if [ "$scanned" -eq 0 ]; then
+    python3 "$scanner" >&2 || status=$?
+fi
+
+if [ "$status" -ne 0 ]; then
+    echo >&2
+    echo "push-guard: push blocked. Remove the secret from the commits themselves" >&2
+    echo "(a later commit does not erase it) and rotate anything real." >&2
+    echo "If this is a false positive: git push --no-verify" >&2
+    exit 1
+fi
+
+exit 0

@@ -8,6 +8,7 @@ A small Claude Code plugin marketplace. Several plugins, one job each.
 | [`commit-guard`](plugins/commit-guard) | Keep `Co-Authored-By: Claude` out of commits | `PreToolUse` hook blocks a `git commit` carrying the trailer; a git `commit-msg` backstop strips it for cases the tool layer can't see |
 | [`commit-style`](plugins/commit-style) | Nudge commits toward Conventional Commits | A warning-only git `commit-msg` hook. A guide, not a guard: it never blocks, it only reminds |
 | [`session-logger`](plugins/session-logger) | Keep a log of what each session did | `SessionStart` / `PostToolUse` / `Stop` hooks append a per-day markdown log of file writes and bash commands |
+| [`push-guard`](plugins/push-guard) | Keep secrets and half-done work out of a push | `PreToolUse` hook scans the commits a `git push` would send for credentials, `.env` files, conflict markers, and WIP commits; a git `pre-push` backstop covers pushes made outside Claude |
 | [`plugin-vet`](plugins/plugin-vet) | Security-review a plugin before you install it | `/plugin-vet:vet <repo>` clones it, runs a deterministic malware scan of its hooks and scripts, then an AI review, and gives a BLOCK / WARN / CLEAN verdict |
 
 ## Install
@@ -18,6 +19,7 @@ A small Claude Code plugin marketplace. Several plugins, one job each.
 /plugin install commit-guard@claude-guardrails
 /plugin install commit-style@claude-guardrails
 /plugin install session-logger@claude-guardrails
+/plugin install push-guard@claude-guardrails
 /plugin install plugin-vet@claude-guardrails
 ```
 
@@ -96,6 +98,47 @@ native setting in `~/.claude/settings.json`:
 commit-guard then only has to catch the occasional case where Claude adds the
 trailer anyway via the Bash tool.
 
+### push-guard: what leaves the machine
+
+The tool-layer hook is automatic once the plugin is enabled: any `git push` Claude
+runs is scanned first, and a finding blocks it. For pushes you make yourself, from
+a terminal or an editor, install the `pre-push` backstop per repo:
+
+```shell
+/push-guard:install-git-hook
+```
+
+Check without pushing anything:
+
+```shell
+/push-guard:scan                    # the unpushed commits
+/push-guard:scan origin/main..HEAD  # an explicit range
+```
+
+What it looks for, in the commits a push would send:
+
+- **HIGH**, blocks: private key blocks, AWS / GitHub / Slack / Stripe / Google /
+  Anthropic / OpenAI / npm / PyPI token shapes, JWTs, unresolved conflict markers,
+  and paths that normally hold credentials (`.env`, `.npmrc`, `id_rsa`, `*.pem`).
+  `.env.example` and friends are explicitly fine.
+- **MEDIUM**, also blocks, with an override: a hardcoded-looking
+  `password = "..."`, an embedded certificate, a file over 5 MB, a commit subject
+  starting `WIP`/`fixup!`/`squash!`.
+
+It reads **added** lines only, so deleting a secret does not block you. It scans
+**each commit against its parent**, not the collapsed range, because a secret added
+in one commit and removed in the next is still in the history the push uploads.
+
+Escape hatches, both deliberate and visible: `PUSH_GUARD_SKIP=1` for either layer,
+`git push --no-verify` for the git one.
+
+#### What it cannot do
+
+Regex scanning finds credentials with a recognisable shape. It will not find a
+password that looks like an ordinary string, a secret inside a binary, or a token
+format nobody has written a rule for. A clean result means "nothing obvious",
+not "nothing". Treat it as one layer, not as permission to stop reading diffs.
+
 ### commit-style: a guide, not a guard
 
 `commit-style` warns when a commit subject is not Conventional Commits format
@@ -156,6 +199,10 @@ Run the smoke tests:
 ```shell
 sh tests/smoke.sh
 ```
+
+The suite is hermetic: it builds throwaway repos and bare remotes under a temp
+dir and points `CLAUDE_CONFIG_DIR` at a temp path, so it never reads your real
+settings or touches a real remote.
 
 ## Credits
 

@@ -295,6 +295,202 @@ R3="$WORK/repo3"; mkdir -p "$R3"; ( cd "$R3" && git init -q )
 [ "$(cd "$R3" && git rev-list --count HEAD 2>/dev/null)" = "1" ] && ok "guide: bad commit still succeeds (not blocked)" || bad "guide: commit was blocked"
 assert_contains "guide: warning shown on bad real commit" "commit-style" "$WORK/csgit"
 
+echo "== push-guard scanner (scan_push.py) =="
+PSH="$ROOT/plugins/push-guard/scripts"
+SCANP="$PSH/scan_push.py"
+
+# Fake credentials are assembled from pieces at runtime, so this test file never
+# contains a literal that push-guard would flag when this repo is itself pushed.
+AWS_KEY="AKIA""ABCDEFGHIJKLMNOP"
+GH_TOK="ghp_""abcdefghijklmnopqrstuvwxyz0123456789"
+PRIV_HDR="-----BEGIN RSA ""PRIVATE KEY-----"
+
+# A repo with one unpushed commit that leaks an AWS key.
+P1="$WORK/push1"; mkdir -p "$P1"; ( cd "$P1" && git init -q )
+( cd "$P1" && printf 'aws_key = "%s"\n' "$AWS_KEY" > app.py && git add app.py && \
+  git_env git commit -q -m "feat: add client" )
+python3 "$SCANP" --repo "$P1" > "$WORK/p1" 2>&1
+assert_exit "unpushed AWS key -> exit 2 (HIGH)" 2 $?
+assert_contains "AWS key: named" "AWS access key id" "$WORK/p1"
+assert_contains "AWS key: located in the file" "app.py:1" "$WORK/p1"
+
+# Same repo, key removed in a later commit: the old commit still carries it, so
+# the scan must still fail. This is the case a naive working-tree scan misses.
+( cd "$P1" && printf 'aws_key = os.environ["AWS_KEY"]\n' > app.py && git add app.py && \
+  git_env git commit -q -m "fix: read key from env" )
+python3 "$SCANP" --repo "$P1" >/dev/null 2>&1
+assert_exit "key removed in a later commit -> still exit 2 (history keeps it)" 2 $?
+
+# A deleted secret with no history behind it is not the pusher's problem: scan a
+# range that only removes lines.
+P2="$WORK/push2"; mkdir -p "$P2"; ( cd "$P2" && git init -q )
+( cd "$P2" && printf 'token = "%s"\n' "$GH_TOK" > c.py && git add c.py && \
+  git_env git commit -q -m "seed" )
+BASE2=$(cd "$P2" && git rev-parse HEAD)
+( cd "$P2" && printf 'token = os.environ["T"]\n' > c.py && git add c.py && \
+  git_env git commit -q -m "fix: env" )
+python3 "$SCANP" --repo "$P2" --range "$BASE2..HEAD" >/dev/null 2>&1
+assert_exit "range that only removes a secret -> exit 0" 0 $?
+
+# GitHub token, private key, conflict marker: each HIGH on its own.
+P3="$WORK/push3"; mkdir -p "$P3"; ( cd "$P3" && git init -q )
+( cd "$P3" && printf 'gh = "%s"\n' "$GH_TOK" > t.txt && git add t.txt && \
+  git_env git commit -q -m "a" )
+python3 "$SCANP" --repo "$P3" > "$WORK/p3" 2>&1
+assert_exit "GitHub token -> exit 2" 2 $?
+assert_contains "GitHub token named" "GitHub token" "$WORK/p3"
+
+P4="$WORK/push4"; mkdir -p "$P4"; ( cd "$P4" && git init -q )
+( cd "$P4" && printf '%s\nMIIabc\n' "$PRIV_HDR" > k.txt && git add k.txt && \
+  git_env git commit -q -m "a" )
+python3 "$SCANP" --repo "$P4" > "$WORK/p4" 2>&1
+assert_exit "private key block -> exit 2" 2 $?
+assert_contains "private key named" "private key block" "$WORK/p4"
+
+P5="$WORK/push5"; mkdir -p "$P5"; ( cd "$P5" && git init -q )
+( cd "$P5" && printf 'a\n%s HEAD\nb\n' '<<<<<<<' > m.txt && git add m.txt && \
+  git_env git commit -q -m "a" )
+python3 "$SCANP" --repo "$P5" > "$WORK/p5" 2>&1
+assert_exit "conflict marker -> exit 2" 2 $?
+assert_contains "conflict marker named" "conflict marker" "$WORK/p5"
+
+# A .env file is HIGH by path alone; .env.example is explicitly fine.
+P6="$WORK/push6"; mkdir -p "$P6"; ( cd "$P6" && git init -q )
+( cd "$P6" && printf 'A=1\n' > .env && git add .env && git_env git commit -q -m "a" )
+python3 "$SCANP" --repo "$P6" > "$WORK/p6" 2>&1
+assert_exit ".env committed -> exit 2" 2 $?
+assert_contains ".env flagged by path" "normally holds credentials" "$WORK/p6"
+
+P7="$WORK/push7"; mkdir -p "$P7"; ( cd "$P7" && git init -q )
+( cd "$P7" && printf 'A=your-key-here\n' > .env.example && git add .env.example && \
+  git_env git commit -q -m "docs: sample env" )
+python3 "$SCANP" --repo "$P7" >/dev/null 2>&1
+assert_exit ".env.example -> exit 0 (meant to be committed)" 0 $?
+
+# MEDIUM: a hardcoded-looking assignment, and a placeholder that must not fire.
+P8="$WORK/push8"; mkdir -p "$P8"; ( cd "$P8" && git init -q )
+( cd "$P8" && printf 'password = "hunter2hunter2"\n' > s.py && git add s.py && \
+  git_env git commit -q -m "a" )
+python3 "$SCANP" --repo "$P8" > "$WORK/p8" 2>&1
+assert_exit "hardcoded password -> exit 1 (MED)" 1 $?
+assert_contains "hardcoded password named" "hardcoded credential" "$WORK/p8"
+
+P9="$WORK/push9"; mkdir -p "$P9"; ( cd "$P9" && git init -q )
+( cd "$P9" && printf 'password = "your-password-here"\n' > s.py && git add s.py && \
+  git_env git commit -q -m "a" )
+python3 "$SCANP" --repo "$P9" >/dev/null 2>&1
+assert_exit "placeholder credential -> exit 0 (not a leak)" 0 $?
+
+# MEDIUM: a commit that says it is not ready.
+P10="$WORK/push10"; mkdir -p "$P10"; ( cd "$P10" && git init -q )
+( cd "$P10" && : > f && git add f && git_env git commit -q -m "WIP: half done" )
+python3 "$SCANP" --repo "$P10" > "$WORK/p10" 2>&1
+assert_exit "WIP commit subject -> exit 1 (MED)" 1 $?
+assert_contains "WIP subject named" "not-ready" "$WORK/p10"
+
+# Clean repo, and a repo whose commits are all on a remote already.
+P11="$WORK/push11"; mkdir -p "$P11"; ( cd "$P11" && git init -q )
+( cd "$P11" && printf 'print("hello")\n' > ok.py && git add ok.py && \
+  git_env git commit -q -m "feat: greet" )
+python3 "$SCANP" --repo "$P11" > "$WORK/p11" 2>&1
+assert_exit "clean unpushed commit -> exit 0" 0 $?
+assert_contains "clean: says so" "clean" "$WORK/p11"
+
+REMOTE="$WORK/remote.git"; git init -q --bare "$REMOTE"
+( cd "$P1" && git remote add origin "$REMOTE" && git push -q --no-verify origin HEAD 2>/dev/null )
+python3 "$SCANP" --repo "$P1" > "$WORK/p1b" 2>&1
+assert_exit "everything already pushed -> exit 0" 0 $?
+assert_contains "nothing unpushed: says so" "nothing unpushed" "$WORK/p1b"
+
+python3 "$SCANP" --repo "$WORK/not-a-repo" >/dev/null 2>&1
+assert_exit "not a git repo -> exit 2" 2 $?
+
+echo "== push-guard PreToolUse (block_push.py) =="
+
+json_bash_cwd() { # <command-json-string> <cwd>
+    printf '{"tool_name":"Bash","cwd":"%s","tool_input":{"command":%s}}' "$2" "$1"
+}
+
+cmd=$(printf 'git push origin master' | jstr)
+run_hook "$PSH/block_push.py" "$(json_bash_cwd "$cmd" "$P4")"
+assert_exit "push from a repo with a private key -> block (2)" 2 "$RC"
+assert_contains "block message explains" "push-guard" "$STDERR_FILE"
+assert_contains "block message names the finding" "private key block" "$STDERR_FILE"
+assert_contains "HIGH advice: rewrite history, rotate" "rotate" "$STDERR_FILE"
+
+run_hook "$PSH/block_push.py" "$(json_bash_cwd "$cmd" "$P11")"
+assert_exit "push from a clean repo -> pass (0)" 0 "$RC"
+
+run_hook "$PSH/block_push.py" "$(json_bash_cwd "$cmd" "$P8")"
+assert_exit "push with only a MED finding -> block (2)" 2 "$RC"
+assert_contains "MED advice offers the override" "PUSH_GUARD_SKIP=1" "$STDERR_FILE"
+
+cmd=$(printf 'git push --dry-run origin master' | jstr)
+run_hook "$PSH/block_push.py" "$(json_bash_cwd "$cmd" "$P4")"
+assert_exit "--dry-run sends nothing -> pass (0)" 0 "$RC"
+
+cmd=$(printf 'git status' | jstr)
+run_hook "$PSH/block_push.py" "$(json_bash_cwd "$cmd" "$P4")"
+assert_exit "non-push git command -> pass (0)" 0 "$RC"
+
+cmd=$(printf 'git push origin master' | jstr)
+STDERR_FILE="$WORK/stderr"
+printf '%s' "$(json_bash_cwd "$cmd" "$P4")" | PUSH_GUARD_SKIP=1 python3 "$PSH/block_push.py" >/dev/null 2>"$STDERR_FILE"
+assert_exit "PUSH_GUARD_SKIP=1 -> pass (0)" 0 $?
+
+run_hook "$PSH/block_push.py" '{"tool_name":"Read","tool_input":{"file_path":"x"}}'
+assert_exit "non-Bash tool -> pass (0)" 0 "$RC"
+
+run_hook "$PSH/block_push.py" 'garbage'
+assert_exit "malformed JSON -> pass (0)" 0 "$RC"
+
+echo "== push-guard git backstop (pre-push + install-git-hook.sh) =="
+
+# A real push into a real bare remote, blocked by the installed hook.
+R4="$WORK/repo4"; mkdir -p "$R4"; ( cd "$R4" && git init -q )
+BARE="$WORK/bare4.git"; git init -q --bare "$BARE"
+( cd "$R4" && sh "$PSH/install-git-hook.sh" >/dev/null )
+[ -x "$R4/.git/hooks/pre-push" ] && ok "install: pre-push hook created & executable" || bad "install: hook missing/not executable"
+[ -f "$R4/.git/hooks/push-guard-scan.py" ] && ok "install: scanner copied next to the hook" || bad "install: scanner not copied"
+
+( cd "$R4" && printf 'k = "%s"\n' "$AWS_KEY" > leak.py && git add leak.py && \
+  git_env git commit -q -m "feat: x" && git remote add origin "$BARE" )
+( cd "$R4" && git push origin master >/dev/null 2>"$WORK/pusherr" ); rc=$?
+[ "$rc" -ne 0 ] && ok "real push carrying a key is blocked" || bad "real push was allowed"
+assert_contains "blocked push explains why" "AWS access key id" "$WORK/pusherr"
+[ -z "$(cd "$BARE" && git rev-list --all 2>/dev/null)" ] && ok "remote received nothing" || bad "remote got the commit anyway"
+
+# --no-verify is the documented escape hatch.
+( cd "$R4" && git push --no-verify -q origin master >/dev/null 2>&1 ) && \
+  ok "--no-verify bypasses the hook" || bad "--no-verify did not bypass"
+
+# Clean history pushes normally.
+R5="$WORK/repo5"; mkdir -p "$R5"; ( cd "$R5" && git init -q )
+BARE5="$WORK/bare5.git"; git init -q --bare "$BARE5"
+( cd "$R5" && sh "$PSH/install-git-hook.sh" >/dev/null )
+( cd "$R5" && printf 'clean\n' > f && git add f && git_env git commit -q -m "feat: fine" && \
+  git remote add origin "$BARE5" && git push -q origin master >/dev/null 2>&1 ) && \
+  ok "clean push succeeds" || bad "clean push was blocked"
+
+# Idempotent, and chains onto a foreign pre-push hook.
+( cd "$R5" && sh "$PSH/install-git-hook.sh" >/dev/null 2>&1 ) && ok "install: idempotent re-run ok" || bad "install: re-run failed"
+
+R6="$WORK/repo6"; mkdir -p "$R6"; ( cd "$R6" && git init -q )
+BARE6="$WORK/bare6.git"; git init -q --bare "$BARE6"
+cat > "$R6/.git/hooks/pre-push" <<EOF
+#!/bin/sh
+touch "$R6/existing-ran"
+exit 0
+EOF
+chmod +x "$R6/.git/hooks/pre-push"
+( cd "$R6" && sh "$PSH/install-git-hook.sh" >/dev/null )
+[ -f "$R6/.git/hooks/pre-push.pre-push-guard" ] && ok "chain: previous hook preserved" || bad "chain: previous hook not preserved"
+( cd "$R6" && printf 'k = "%s"\n' "$AWS_KEY" > leak.py && git add leak.py && \
+  git_env git commit -q -m "feat: x" && git remote add origin "$BARE6" )
+( cd "$R6" && git push origin master >/dev/null 2>&1 ); rc=$?
+[ -f "$R6/existing-ran" ] && ok "chain: existing hook still ran" || bad "chain: existing hook did not run"
+[ "$rc" -ne 0 ] && ok "chain: backstop still blocked the push" || bad "chain: push was allowed"
+
 echo "== session-logger (log.py) =="
 SLG="$ROOT/plugins/session-logger/scripts"
 LOGS="$WORK/logs"
