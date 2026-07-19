@@ -3,13 +3,22 @@
 
 Claude Code runs this after every Write / Edit / NotebookEdit (see hooks.json).
 It receives the tool-call JSON on stdin, pulls out the written file path, runs the
-vendored deterministic checker on it, and if the file contains em dashes it exits 2
-so the checker output is fed back to Claude as an error to fix. Clean files exit 0.
+vendored deterministic checker on it, and reports what it found as hook JSON on
+stdout: a `systemMessage` counting the dashes for the user, and, unless autofix is
+off, a `decision: block` whose `reason` tells Claude what to do about them.
+
+Autofix mode (see scripts/autofix_mode.py and /emdash-guard:autofix):
+  on      block, and have Claude rewrite each dash with real punctuation (default)
+  off     never block; only show the user the count
+  prompt  block, but have Claude ask the user before rewriting anything
 
 Scope: only files whose extension is in TEXT_EXTENSIONS are checked, so prose gets
 guarded without turning every source-code edit into noise. Override the set with
 the EMDASH_GUARD_EXTENSIONS env var (comma-separated, e.g. ".md,.txt,.py"); set it
 to "*" to check every written file regardless of extension.
+
+Always exits 0: the verdict travels in the JSON, and a checker that cannot run
+must never stall a session.
 """
 
 import json
@@ -17,10 +26,15 @@ import os
 import subprocess
 import sys
 
+from autofix_mode import current_mode
+
 DEFAULT_EXTENSIONS = {
     ".md", ".markdown", ".mdx", ".txt", ".text", ".rst",
     ".adoc", ".asciidoc", ".org", ".tex",
 }
+
+REWRITE = ("Rewrite each flagged spot with real punctuation "
+           "(comma, colon, semicolon, period, or parentheses).")
 
 
 def wanted_extensions():
@@ -35,6 +49,25 @@ def wanted_extensions():
 def target_path(payload):
     ti = payload.get("tool_input", {}) or {}
     return ti.get("file_path") or ti.get("notebook_path")
+
+
+def count_hits(checker_stdout):
+    """How many dashes the checker flagged: one line per hit, "path:l:c: found '-'"."""
+    return sum(1 for line in checker_stdout.splitlines() if ": found '" in line)
+
+
+def emit(system_message, reason=None):
+    """Write the hook's PostToolUse JSON verdict to stdout.
+
+    systemMessage is shown to the user; a decision of "block" hands `reason` back
+    to Claude to act on. Omitting the decision reports without interrupting.
+    """
+    out = {"systemMessage": system_message}
+    if reason is not None:
+        out["decision"] = "block"
+        out["reason"] = reason
+    json.dump(out, sys.stdout)
+    sys.stdout.write("\n")
 
 
 def main():
@@ -60,15 +93,33 @@ def main():
     except (OSError, subprocess.SubprocessError):
         return 0  # checker unavailable: fail open, do not block the workflow
 
-    if result.returncode == 1:  # 1 == em dashes found; other nonzero == checker error
-        sys.stderr.write(f"emdash-guard: em dash / stand-in dash found in {path}\n\n")
-        sys.stderr.write(result.stdout)
-        sys.stderr.write(
-            "\nRewrite each flagged spot with real punctuation "
-            "(comma, colon, semicolon, period, or parentheses), then save again.\n"
-        )
-        return 2  # feed this back to Claude as a fixable error
+    if result.returncode != 1:  # 1 == dashes found; anything else == clean or broken
+        return 0
 
+    count = count_hits(result.stdout)
+    noun = "em dash / stand-in dash" if count == 1 else "em dashes / stand-in dashes"
+    name = os.path.basename(path)
+    mode = current_mode()
+
+    if mode == "off":
+        emit(f"emdash-guard: {count} {noun} in {name} (autofix off, not fixing)")
+        return 0
+
+    detail = f"emdash-guard: {count} {noun} found in {path}\n\n{result.stdout}\n"
+
+    if mode == "prompt":
+        emit(
+            f"emdash-guard: {count} {noun} in {name} (asking before fixing)",
+            detail + "Autofix is set to 'prompt'. Ask the user with AskUserQuestion: "
+            f"\"Remove the {count} em dashes in {name}?\" Rewrite the file only if "
+            f"they say yes, and leave it exactly as written if they decline. {REWRITE}",
+        )
+        return 0
+
+    emit(
+        f"emdash-guard: {count} {noun} in {name} (fixing)",
+        detail + REWRITE + " Then save the file again.",
+    )
     return 0
 
 

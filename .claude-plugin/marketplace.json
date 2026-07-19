@@ -8,7 +8,7 @@
     {
       "name": "emdash-guard",
       "source": "./plugins/emdash-guard",
-      "description": "Post-write hook: flags em dashes and stand-in dashes in files Claude writes, so Claude fixes them before moving on."
+      "description": "Post-write hook: counts em dashes and stand-in dashes in files Claude writes and shows the count, then fixes, ignores, or asks, per the /emdash-guard:autofix setting."
     },
     {
       "name": "commit-guard",

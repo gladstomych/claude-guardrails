@@ -4,7 +4,7 @@ A small Claude Code plugin marketplace. Several plugins, one job each.
 
 | Plugin | Job | Mechanism |
 | :----- | :-- | :-------- |
-| [`emdash-guard`](plugins/emdash-guard) | Keep em dashes out of files Claude writes | `PostToolUse` hook on `Write`/`Edit`/`NotebookEdit` runs a deterministic checker; on a hit it asks Claude to rewrite with real punctuation |
+| [`emdash-guard`](plugins/emdash-guard) | Keep em dashes out of files Claude writes | `PostToolUse` hook on `Write`/`Edit`/`NotebookEdit` runs a deterministic checker, tells you how many dashes the file has, and then fixes, ignores, or asks, per `/emdash-guard:autofix` |
 | [`commit-guard`](plugins/commit-guard) | Keep `Co-Authored-By: Claude` out of commits | `PreToolUse` hook blocks a `git commit` carrying the trailer; a git `commit-msg` backstop strips it for cases the tool layer can't see |
 | [`commit-style`](plugins/commit-style) | Nudge commits toward Conventional Commits | A warning-only git `commit-msg` hook. A guide, not a guard: it never blocks, it only reminds |
 | [`session-logger`](plugins/session-logger) | Keep a log of what each session did | `SessionStart` / `PostToolUse` / `Stop` hooks append a per-day markdown log of file writes and bash commands |
@@ -22,6 +22,41 @@ A small Claude Code plugin marketplace. Several plugins, one job each.
 ```
 
 Install any one on its own; they are independent.
+
+### emdash-guard: the counter and the autofix switch
+
+After every write to a prose file, the hook reports what it found:
+
+```
+emdash-guard: 3 em dashes / stand-in dashes in README.md (fixing)
+```
+
+What happens next is the autofix mode, which you set once and it applies in every
+repo:
+
+```shell
+/emdash-guard:autofix          # show the current mode
+/emdash-guard:autofix on       # default: Claude rewrites each dash with real punctuation
+/emdash-guard:autofix off      # only ever show the count, never block, never edit
+/emdash-guard:autofix prompt   # Claude asks you first, and rewrites only on a yes
+```
+
+`on` does not mangle prose with a blind search and replace: the hook hands the
+flagged lines back to Claude, which recasts each one. `off` leaves the file exactly
+as written and just keeps you informed. `prompt` is the middle ground for drafts you
+may want to keep verbatim.
+
+The mode lives in `~/.claude/emdash-guard/config.json` (or `$CLAUDE_CONFIG_DIR`).
+Set `EMDASH_GUARD_AUTOFIX=on|off|prompt` to override it for one session, for example
+in CI. The mode script also runs standalone:
+
+```shell
+python3 plugins/emdash-guard/scripts/autofix_mode.py off
+```
+
+Which files get checked is separate, and still controlled by
+`EMDASH_GUARD_EXTENSIONS` (default: markdown and plain-text extensions; `*` checks
+everything).
 
 ### commit-guard: two layers
 

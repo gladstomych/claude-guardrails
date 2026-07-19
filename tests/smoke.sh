@@ -18,6 +18,12 @@ EMDASH=$(printf '\342\200\224')       # U+2014 em dash
 ENDASH=$(printf '\342\200\223')       # U+2013 en dash
 HBAR=$(printf '\342\200\225')         # U+2015 horizontal bar
 
+# Isolate every config-reading script from the developer's real ~/.claude, so a
+# locally-set autofix mode cannot change what these tests see.
+CLAUDE_CONFIG_DIR="$WORK/claude-config"
+export CLAUDE_CONFIG_DIR
+unset EMDASH_GUARD_AUTOFIX
+
 pass=0
 fail=0
 ok()   { pass=$((pass + 1)); printf '  ok   %s\n' "$1"; }
@@ -58,41 +64,133 @@ python3 "$CHECKER" "$WORK/hyphen.md" >/dev/null 2>&1; assert_exit "checker: legi
 
 echo "== emdash-guard PostToolUse (post_write_emdash.py) =="
 
+# The hook now always exits 0 and puts its verdict in JSON on stdout:
+#   .systemMessage  the count shown to the user
+#   .decision       "block" when Claude should act, absent when it should not
+# jq-free field read: <field> from $WORK/stdout, empty string if absent.
+hook_field() {
+    python3 -c 'import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+print(d.get(sys.argv[2], "") if isinstance(d, dict) else "")' "$WORK/stdout" "$1"
+}
+# assert_field <name> <field> <expected>
+assert_field() {
+    got=$(hook_field "$2")
+    if [ "$got" = "$3" ]; then ok "$1"; else bad "$1 (want $2='$3', got '$got')"; fi
+}
+# assert_field_has <name> <field> <needle>
+assert_field_has() {
+    hook_field "$2" > "$WORK/field"
+    assert_contains "$1" "$3" "$WORK/field"
+}
+
 f="$WORK/note.md"; printf 'she paused %s then left.\n' "$EMDASH" > "$f"
 run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
-assert_exit "md with em dash -> block (2)" 2 "$RC"
-assert_contains "block message names the file" "$f" "$STDERR_FILE"
+assert_exit "md with em dash -> exit 0 (verdict is in the JSON)" 0 "$RC"
+assert_field "md with em dash -> decision block" decision block
+assert_field_has "reason names the file" reason "$f"
+assert_field_has "systemMessage counts 1 dash" systemMessage "emdash-guard: 1 em dash"
+
+# Counter: three dashes on two lines are reported as three.
+f="$WORK/three.md"; printf 'a %s b and c %s d\nthen e %s f\n' "$EMDASH" "$EMDASH" "$EMDASH" > "$f"
+run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
+assert_field_has "systemMessage counts 3 dashes (plural)" systemMessage "3 em dashes"
+assert_field_has "systemMessage names the file" systemMessage "three.md"
 
 f="$WORK/enbar.md"; printf 'x %s y and a %s b\n' "$ENDASH" "$HBAR" > "$f"
 run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
-assert_exit "md with en dash / horizontal bar -> block (2)" 2 "$RC"
+assert_field "md with en dash / horizontal bar -> decision block" decision block
 
 f="$WORK/good.md"; printf 'clean prose, honest punctuation.\n' > "$f"
 run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
 assert_exit "clean md -> pass (0)" 0 "$RC"
+assert_field "clean md -> no decision" decision ""
 
 f="$WORK/code.py"; printf 'x = 1  # a note %s really\n' "$EMDASH" > "$f"
 run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
-assert_exit ".py skipped by default extension filter -> 0" 0 "$RC"
+assert_field ".py skipped by default extension filter -> no decision" decision ""
 
 f="$WORK/code2.py"; printf 'x = 1  # a note %s really\n' "$EMDASH" > "$f"
-STDERR_FILE="$WORK/stderr"
-printf '%s' "$(json_write "$f")" | EMDASH_GUARD_EXTENSIONS='*' python3 "$EMD/post_write_emdash.py" >/dev/null 2>"$STDERR_FILE"
-assert_exit "EMDASH_GUARD_EXTENSIONS=* checks .py -> block (2)" 2 $?
+printf '%s' "$(json_write "$f")" | EMDASH_GUARD_EXTENSIONS='*' python3 "$EMD/post_write_emdash.py" >"$WORK/stdout" 2>/dev/null
+assert_field "EMDASH_GUARD_EXTENSIONS=* checks .py -> decision block" decision block
 
 run_hook "$EMD/post_write_emdash.py" '{"tool_name":"Write","tool_input":{"file_path":"/no/such/file.md"}}'
 assert_exit "missing file -> pass (0)" 0 "$RC"
 
 f="$WORK/edit.md"; printf 'edited %s badly\n' "$EMDASH" > "$f"
 run_hook "$EMD/post_write_emdash.py" "$(printf '{"tool_name":"Edit","tool_input":{"file_path":"%s"}}' "$f")"
-assert_exit "Edit tool payload -> block (2)" 2 "$RC"
+assert_field "Edit tool payload -> decision block" decision block
 
 f="$WORK/nb.ipynb"; printf 'cell text %s here\n' "$EMDASH" > "$f"
 run_hook "$EMD/post_write_emdash.py" "$(printf '{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"%s"}}' "$f")"
-assert_exit "NotebookEdit notebook_path (.ipynb not in default exts) -> 0" 0 "$RC"
+assert_field "NotebookEdit notebook_path (.ipynb not in default exts) -> no decision" decision ""
 
 run_hook "$EMD/post_write_emdash.py" 'not json at all'
 assert_exit "malformed JSON -> pass (0)" 0 "$RC"
+
+echo "== emdash-guard autofix modes (autofix_mode.py + the hook) =="
+MODE="$EMD/autofix_mode.py"
+
+python3 "$MODE" > "$WORK/mode" 2>&1
+assert_exit "no config yet -> exit 0" 0 $?
+assert_contains "no config yet -> defaults to on" "autofix: on" "$WORK/mode"
+assert_contains "no config yet -> says so" "default (no config file yet)" "$WORK/mode"
+
+python3 "$MODE" off > "$WORK/mode" 2>&1
+assert_exit "set off -> exit 0" 0 $?
+assert_contains "set off -> confirms" "autofix set to: off" "$WORK/mode"
+python3 "$MODE" > "$WORK/mode" 2>&1
+assert_contains "set off -> persisted" "autofix: off" "$WORK/mode"
+assert_contains "set off -> source is the config file" "config.json" "$WORK/mode"
+
+f="$WORK/offmode.md"; printf 'a %s b\n' "$EMDASH" > "$f"
+run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
+assert_exit "mode off -> exit 0" 0 "$RC"
+assert_field "mode off -> no decision (never blocks)" decision ""
+assert_field_has "mode off -> still counts for the user" systemMessage "1 em dash"
+assert_field_has "mode off -> says it is not fixing" systemMessage "autofix off"
+
+python3 "$MODE" prompt >/dev/null 2>&1
+f="$WORK/promptmode.md"; printf 'a %s b\n' "$EMDASH" > "$f"
+run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
+assert_field "mode prompt -> decision block" decision block
+assert_field_has "mode prompt -> reason tells Claude to ask first" reason "AskUserQuestion"
+assert_field_has "mode prompt -> reason respects a no" "reason" "if they decline"
+assert_field_has "mode prompt -> systemMessage says it is asking" systemMessage "asking before fixing"
+
+python3 "$MODE" on >/dev/null 2>&1
+f="$WORK/onmode.md"; printf 'a %s b\n' "$EMDASH" > "$f"
+run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
+assert_field "mode on -> decision block" decision block
+assert_field_has "mode on -> reason says rewrite" reason "Rewrite each flagged spot"
+
+# Env var beats the config file, for one session only.
+python3 "$MODE" on >/dev/null 2>&1
+EMDASH_GUARD_AUTOFIX=off python3 "$MODE" > "$WORK/mode" 2>&1
+assert_contains "env var overrides the file" "autofix: off" "$WORK/mode"
+assert_contains "env var override is reported as such" "env var" "$WORK/mode"
+f="$WORK/envmode.md"; printf 'a %s b\n' "$EMDASH" > "$f"
+printf '%s' "$(json_write "$f")" | EMDASH_GUARD_AUTOFIX=off python3 "$EMD/post_write_emdash.py" >"$WORK/stdout" 2>/dev/null
+assert_field "env var off -> hook does not block" decision ""
+
+python3 "$MODE" sideways >"$WORK/mode" 2>&1
+assert_exit "unknown mode -> exit 2" 2 $?
+assert_contains "unknown mode -> lists valid modes" "on, off, prompt" "$WORK/mode"
+python3 "$MODE" > "$WORK/mode" 2>&1
+assert_contains "unknown mode left the saved mode alone" "autofix: on" "$WORK/mode"
+
+# A corrupt config file must not wedge the hook.
+printf 'not json' > "$CLAUDE_CONFIG_DIR/emdash-guard/config.json"
+python3 "$MODE" > "$WORK/mode" 2>&1
+assert_exit "corrupt config -> exit 0" 0 $?
+assert_contains "corrupt config -> falls back to on" "autofix: on" "$WORK/mode"
+python3 "$MODE" prompt >/dev/null 2>&1
+python3 "$MODE" > "$WORK/mode" 2>&1
+assert_contains "corrupt config -> overwritten cleanly on next set" "autofix: prompt" "$WORK/mode"
+python3 "$MODE" on >/dev/null 2>&1
 
 echo "== commit-guard PreToolUse (block_coauthor.py) =="
 
