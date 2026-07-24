@@ -7,6 +7,12 @@ vendored deterministic checker on it, and reports what it found as hook JSON on
 stdout: a `systemMessage` counting the dashes for the user, and, unless autofix is
 off, a `decision: block` whose `reason` tells Claude what to do about them.
 
+The client renders a block's `reason` in the user's transcript, not just to Claude,
+so the reason carries the count and the checker command that reproduces the
+locations rather than the per-hit listing itself: forty flagged dashes must not
+paint forty lines into the UI. Claude re-runs the checker (or greps the file it
+just wrote) to find the spots.
+
 Autofix mode (see scripts/autofix_mode.py and /emdash-guard:autofix):
   on      block, and have Claude rewrite each dash with real punctuation (default)
   off     never block; only show the user the count
@@ -116,7 +122,11 @@ def main():
         emit(f"{count} {noun} in {name}, not fixing.", level="warn")
         return 0
 
-    detail = f"emdash-guard: {count} {noun} found in {path}\n\n{result.stdout}\n"
+    detail = (
+        f"emdash-guard: {count} {noun} found in {path}\n"
+        f"For the exact spots (path:line:col per hit) run: "
+        f"python3 {checker} {path}\n"
+    )
 
     if mode == "prompt":
         emit(

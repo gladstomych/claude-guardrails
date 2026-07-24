@@ -93,6 +93,12 @@ run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
 assert_exit "md with em dash -> exit 0 (verdict is in the JSON)" 0 "$RC"
 assert_field "md with em dash -> decision block" decision block
 assert_field_has "reason names the file" reason "$f"
+assert_field_has "reason carries the count" reason "1 em dash"
+assert_field_has "reason points Claude at the checker" reason "check_em_dashes.py"
+# The client shows a block's reason in the user's UI, so the per-hit listing
+# stays out of it; the count and the checker command are the whole story.
+hook_field reason > "$WORK/field"
+assert_absent "reason omits the per-hit listing" ": found '" "$WORK/field"
 assert_field_has "systemMessage counts 1 dash" systemMessage "1 em dash"
 
 # Counter: three dashes on two lines are reported as three.
