@@ -1,0 +1,8 @@
+{
+  "name": "pip-guard",
+  "description": "Blocks pip installs into the global site-packages and points Claude at the project venv; PIP_GUARD_ALLOW=1 lets a user-approved global install through.",
+  "version": "0.1.0",
+  "author": {
+    "name": "gladstomych"
+  }
+}

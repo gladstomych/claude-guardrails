@@ -175,6 +175,37 @@ It will not find a password that looks like an ordinary string, a secret in a
 binary, or a token format nobody wrote a rule for. A clean result means "nothing
 obvious", not "nothing".
 
+## pip-guard
+
+The `PreToolUse` hook stops Claude installing Python packages into the global
+site-packages. A `pip install` (pip, pip3, pipX.Y, `python -m pip`) is blocked
+with a reminder that the default and recommended way is a virtual environment,
+and Claude is told to use the project's venv, creating it first if there is none.
+
+The guard stands down when the install already targets an isolated environment:
+
+- `VIRTUAL_ENV` or `CONDA_PREFIX` is set in the session (Claude was launched
+  inside an activated env),
+- the interpreter is path-qualified into an env (`.venv/bin/pip install ...`),
+- the same command *activates* one (`source .venv/bin/activate && ...`), or
+- the install is redirected off the global site-packages (`--target`,
+  `--prefix`, `--root`).
+
+Merely *creating* an env earns no pass: `python -m venv .venv && pip install x`
+(likewise `virtualenv`, `uv venv`) is blocked, because the bare pip after
+creation still installs globally. `uv pip install` passes on uv's own refusal
+to touch anything but a venv, except its explicit global forms
+(`uv pip install --system`, or `--python` pointing outside an env), which are
+blocked like any other global install; the rest of uv (`uv add`, `uv sync`,
+`uv run`) manages its own environments and is not pip-guard's business.
+
+When you actually want a global install, say so: Claude reruns the command
+prefixed with `PIP_GUARD_ALLOW=1`. Set that variable in your environment to
+stand the guard down for a whole session instead. Non-install subcommands
+(`pip list`, `pip show`, ...) are never touched, and like every guard here it
+over-blocks by design: `sudo pip install` and `pip install --user` both count
+as global, and a pip run from inside a script file is out of its remit.
+
 ## commit-style
 
 Warns when a commit subject is not Conventional Commits format, never blocks.

@@ -636,6 +636,96 @@ chmod +x "$R6/.git/hooks/pre-push"
 [ -f "$R6/existing-ran" ] && ok "chain: existing hook still ran" || bad "chain: existing hook did not run"
 [ "$rc" -ne 0 ] && ok "chain: backstop still blocked the push" || bad "chain: push was allowed"
 
+echo "== pip-guard PreToolUse (block_global_pip.py) =="
+PIP="$ROOT/plugins/pip-guard/scripts"
+
+# The verdict depends on the session env (VIRTUAL_ENV, CONDA_PREFIX,
+# PIP_GUARD_ALLOW), so every case pins those instead of inheriting the
+# developer's shell.
+pipguard() { # <json> [VAR=val ...]
+    json=$1; shift
+    printf '%s' "$json" | env -u VIRTUAL_ENV -u CONDA_PREFIX -u PIP_GUARD_ALLOW \
+        "$@" python3 "$PIP/block_global_pip.py" >"$WORK/stdout" 2>/dev/null
+    RC=$?
+}
+
+pipguard "$(json_bash "$(printf 'pip install requests' | jstr)")"
+assert_exit "bare pip install -> exit 0 (verdict is in the JSON)" 0 "$RC"
+assert_deny "bare pip install -> deny" deny
+assert_reason "reason recommends a venv" "virtual environment"
+assert_reason "reason offers the override" "PIP_GUARD_ALLOW=1"
+assert_sysmsg "user line says blocked" "blocked a pip install outside a venv"
+
+pipguard "$(json_bash "$(printf 'pip3 install -r requirements.txt' | jstr)")"
+assert_deny "pip3 install -r -> deny" deny
+pipguard "$(json_bash "$(printf 'python3 -m pip install flask' | jstr)")"
+assert_deny "python3 -m pip install -> deny" deny
+pipguard "$(json_bash "$(printf 'sudo pip install flask' | jstr)")"
+assert_deny "sudo pip install -> deny" deny
+pipguard "$(json_bash "$(printf 'pip install --user flask' | jstr)")"
+assert_deny "pip install --user is still global -> deny" deny
+pipguard "$(json_bash "$(printf '/usr/bin/pip3 install flask' | jstr)")"
+assert_deny "explicit system pip path -> deny" deny
+pipguard "$(json_bash "$(printf 'cd /tmp && pip install flask' | jstr)")"
+assert_deny "pip install in a compound command -> deny" deny
+
+# Creating a venv is not using it: a bare pip after creation is still global.
+pipguard "$(json_bash "$(printf 'python3 -m venv .venv && pip install flask' | jstr)")"
+assert_deny "venv created but ignored -> deny" deny
+pipguard "$(json_bash "$(printf 'virtualenv .venv && pip install flask' | jstr)")"
+assert_deny "virtualenv created but ignored -> deny" deny
+pipguard "$(json_bash "$(printf 'uv venv && pip install flask' | jstr)")"
+assert_deny "uv venv created but ignored -> deny" deny
+
+pipguard "$(json_bash "$(printf '.venv/bin/pip install flask' | jstr)")"
+assert_deny "venv-path pip -> no decision" ""
+assert_sysmsg "venv-path pip -> pass notice" "targets a venv"
+pipguard "$(json_bash "$(printf 'python3 -m venv .venv && .venv/bin/pip install -e .' | jstr)")"
+assert_deny "create venv then install -> no decision" ""
+pipguard "$(json_bash "$(printf 'source .venv/bin/activate && pip install flask' | jstr)")"
+assert_deny "activate then install -> no decision" ""
+pipguard "$(json_bash "$(printf 'pip install --target vendor/ flask' | jstr)")"
+assert_deny "pip install --target -> no decision" ""
+pipguard "$(json_bash "$(printf 'pip install flask' | jstr)")" VIRTUAL_ENV=/tmp/v
+assert_deny "VIRTUAL_ENV in session env -> no decision" ""
+pipguard "$(json_bash "$(printf 'pip install flask' | jstr)")" CONDA_PREFIX=/tmp/c
+assert_deny "CONDA_PREFIX in session env -> no decision" ""
+
+pipguard "$(json_bash "$(printf 'PIP_GUARD_ALLOW=1 pip install flask' | jstr)")"
+assert_deny "inline PIP_GUARD_ALLOW=1 -> no decision" ""
+assert_sysmsg "inline override -> allowed-with-caveat notice" "allowed a global pip install"
+pipguard "$(json_bash "$(printf 'pip install flask' | jstr)")" PIP_GUARD_ALLOW=1
+assert_deny "env PIP_GUARD_ALLOW=1 -> no decision" ""
+pipguard "$(json_bash "$(printf 'PIP_GUARD_ALLOW=0 pip install flask' | jstr)")"
+assert_deny "PIP_GUARD_ALLOW=0 does not override -> deny" deny
+
+pipguard "$(json_bash "$(printf 'pip list' | jstr)")"
+[ -s "$WORK/stdout" ] && bad "pip list: guard narrated a non-install" || ok "pip list: guard stays quiet"
+
+# uv: plain `uv pip install` passes on uv's own venv enforcement, but the
+# explicit global forms are pip installs like any other.
+pipguard "$(json_bash "$(printf 'uv pip install flask' | jstr)")"
+assert_deny "uv pip install -> no decision (uv enforces the venv)" ""
+assert_sysmsg "uv pip install -> pass notice" "targets a venv"
+pipguard "$(json_bash "$(printf 'uv pip install --system flask' | jstr)")"
+assert_deny "uv pip install --system -> deny" deny
+pipguard "$(json_bash "$(printf 'uv pip install --python /usr/bin/python3 flask' | jstr)")"
+assert_deny "uv pip install --python system interpreter -> deny" deny
+pipguard "$(json_bash "$(printf 'uv pip install --python .venv/bin/python flask' | jstr)")"
+assert_deny "uv pip install --python venv interpreter -> no decision" ""
+pipguard "$(json_bash "$(printf 'uv sync' | jstr)")"
+[ -s "$WORK/stdout" ] && bad "uv sync: guard narrated uv's business" || ok "uv sync: guard stays quiet (uv manages its own envs)"
+pipguard "$(json_bash "$(printf 'echo pip install is risky' | jstr)")"
+[ -s "$WORK/stdout" ] && bad "echo mentioning pip: guard narrated it" || ok "echo mentioning pip: guard stays quiet"
+
+pipguard "$(json_bash "$(printf '.venv/bin/pip install flask' | jstr)")" PIP_GUARD_VERBOSE=0
+[ -s "$WORK/stdout" ] && bad "PIP_GUARD_VERBOSE=0 still spoke on a pass" || ok "PIP_GUARD_VERBOSE=0 silences the pass notice"
+pipguard "$(json_bash "$(printf 'pip install flask' | jstr)")" PIP_GUARD_VERBOSE=0
+assert_deny "PIP_GUARD_VERBOSE=0 never silences a block" deny
+
+pipguard 'not json at all'
+assert_exit "malformed JSON -> pass (0)" 0 "$RC"
+
 echo "== notice styling (hookout.py house style) =="
 cmd_trailer=$(printf 'git commit -m "feat: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"' | jstr)
 
@@ -679,8 +769,9 @@ assert_deny "NO_COLOR never silences a block" deny
 assert_sysmsg "NO_COLOR: block symbol survives" "x blocked"
 
 # Every plugin ships the same helper: drift here is a bug.
-if cmp -s "$CMG/hookout.py" "$PSH/hookout.py" && cmp -s "$CMG/hookout.py" "$EMD/hookout.py"; then
-    ok "hookout.py is byte-identical across the three guards"
+if cmp -s "$CMG/hookout.py" "$PSH/hookout.py" && cmp -s "$CMG/hookout.py" "$EMD/hookout.py" \
+    && cmp -s "$CMG/hookout.py" "$PIP/hookout.py"; then
+    ok "hookout.py is byte-identical across the four guards"
 else
     bad "hookout.py copies have drifted"
 fi

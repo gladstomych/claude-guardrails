@@ -43,8 +43,8 @@ Two enforcement layers, deliberately distinct:
   per repo by a slash command). Catches what the tool layer structurally cannot see:
   `git commit -F file`, editor commits, commits made outside Claude.
 
-`commit-guard` is the only plugin with both. `emdash-guard` and `session-logger`
-are tool-layer only; `commit-style` is git-layer only (no `hooks.json`);
+`commit-guard` is the only plugin with both. `emdash-guard`, `pip-guard`, and
+`session-logger` are tool-layer only; `commit-style` is git-layer only (no `hooks.json`);
 `plugin-vet` is a slash command plus a standalone scanner (no hooks at all).
 `push-guard` has both layers as well: `PreToolUse` on Bash for pushes Claude
 makes, and a `pre-push` hook whose installer copies the scanner next to it so the
@@ -88,7 +88,7 @@ Hook commands always reference scripts as `python3 "${CLAUDE_PLUGIN_ROOT}"/scrip
 - **`hookout.py` is copied, not shared.** Each guard plugin carries its own byte
   identical copy, because the plugins are independently installable and none may
   import from another. Change one, copy it to the others, or they drift; a smoke
-  test `cmp`s the three copies.
+  test `cmp`s the four copies.
 - **Git hook installers chain, never clobber.** `install-git-hook.sh` honours
   `core.hooksPath`, moves an existing `commit-msg` aside to
   `commit-msg.pre-commit-guard` and calls it, and is idempotent on re-run.
