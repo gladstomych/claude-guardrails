@@ -96,14 +96,30 @@ def find_hits(line):
         )
 
     # 3. Double hyphen standing in for an em dash: word--word or spaced -- .
-    for m in re.finditer(r"(?<=\w)--(?=\w)|(?<=\s)--(?=\s)|(?<=\s)--(?=\S)", scan):
+    #
+    #    The `(?<=\s)--(?=\S)` alternative was dropped. It matched every CLI long
+    #    option preceded by a space, so prose mentioning `git diff --stat` or
+    #    `npm run ci --silent` was flagged even though nothing stood in for a dash.
+    #    Its only unique catch was "paused --then left" (space before, none after),
+    #    a rare typo, and command flags are common enough in docs that the trade
+    #    was a bad one. A real double-hyphen dash is either glued (word--word) or
+    #    spaced on both sides, and both of those still match.
+    for m in re.finditer(r"(?<=\w)--(?=\w)|(?<=\s)--(?=\s)", scan):
         yield m.start(), m.group(), (
             "Double hyphen used as a dash. " + GENERIC_FIX
         )
 
-    # 4. Hyphen padded with spaces between two words (letter - letter).
-    #    Skips a list marker at line start and digit-to-digit ranges/minus signs.
-    for m in re.finditer(r"(?<=[^\W\d])\s-\s(?=[^\W\d])", scan):
+    # 4. Hyphen padded with spaces between two words, used as a pause.
+    #
+    #    The following word must be lowercase. A dash standing in for a pause
+    #    continues the sentence ("she paused - then left"); a capitalised word
+    #    after a spaced hyphen is nearly always a range or an attribution, which is
+    #    legitimate punctuation and was being flagged:
+    #      "Open Monday - Friday."     a range
+    #      "Sunny - Secure Agentics"   a label
+    #      "see appendix A - B"        a range
+    #    Digit ranges and minus signs stay excluded by the \d in the lookbehind.
+    for m in re.finditer(r"(?<=[^\W\d])\s-\s(?=[a-z])", scan):
         yield m.start(), m.group(), (
             "Spaced hyphen used as a pause. " + GENERIC_FIX
         )

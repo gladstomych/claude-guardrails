@@ -68,6 +68,102 @@ def count_hits(checker_stdout):
     return sum(1 for line in checker_stdout.splitlines() if ": found '" in line)
 
 
+def hit_line_numbers(checker_stdout):
+    """1-indexed line number for each hit, in the order reported.
+
+    Output shape is "{label}:{line}:{col}: found '{ch}'". rsplit is used rather
+    than split because a label can itself contain colons (an absolute Windows
+    path, for one).
+    """
+    nums = []
+    for line in checker_stdout.splitlines():
+        if ": found '" not in line:
+            continue
+        head = line.split(": found '", 1)[0]
+        parts = head.rsplit(":", 2)
+        if len(parts) != 3:
+            continue
+        try:
+            nums.append(int(parts[1]))
+        except ValueError:
+            continue
+    return nums
+
+
+def hit_signatures(checker_stdout, text):
+    """One signature per hit: the whitespace-normalised text of its line.
+
+    Keyed on line *content* rather than line number on purpose. Inserting a
+    paragraph shifts the number of every hit below it, so a number-based diff
+    would report the whole tail of the file as new. The line's own text is stable
+    across insertions above it.
+    """
+    lines = text.splitlines()
+    sigs = []
+    for n in hit_line_numbers(checker_stdout):
+        if 1 <= n <= len(lines):
+            sigs.append(" ".join(lines[n - 1].split()))
+    return sigs
+
+
+def git_head_text(path):
+    """The committed version of `path`, or None if unavailable.
+
+    None covers every "no baseline to compare against" case: not a git repo, a
+    brand-new untracked file, a detached/empty HEAD, git missing entirely. Callers
+    treat None as "every hit is new", which is the pre-baseline behaviour.
+    """
+    directory = os.path.dirname(os.path.abspath(path))
+    try:
+        top = subprocess.run(
+            ["git", "-C", directory, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if top.returncode != 0:
+            return None
+        root = top.stdout.strip()
+        rel = os.path.relpath(os.path.abspath(path), root).replace(os.sep, "/")
+        show = subprocess.run(
+            ["git", "-C", root, "show", f"HEAD:{rel}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if show.returncode != 0:
+            return None
+        return show.stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def split_new_and_preexisting(current_stdout, current_text, baseline_stdout,
+                             baseline_text):
+    """(new_line_numbers, preexisting_count) for the hits in the current file.
+
+    A hit counts as pre-existing when the committed file already had a hit on an
+    identically-worded line. Multiplicity is respected: if the baseline had one
+    flagged line and the edit duplicated it, the copy is new.
+    """
+    current_lines = hit_line_numbers(current_stdout)
+    current_sigs = hit_signatures(current_stdout, current_text)
+    baseline_sigs = hit_signatures(baseline_stdout, baseline_text)
+
+    budget = {}
+    for sig in baseline_sigs:
+        budget[sig] = budget.get(sig, 0) + 1
+
+    new_lines = []
+    for line_no, sig in zip(current_lines, current_sigs):
+        if budget.get(sig, 0) > 0:
+            budget[sig] -= 1
+        else:
+            new_lines.append(line_no)
+    return new_lines, len(current_lines) - len(new_lines)
+
+
+def baseline_enabled():
+    """EMDASH_GUARD_BASELINE=off restores whole-file counting."""
+    return os.environ.get("EMDASH_GUARD_BASELINE", "").strip().lower() != "off"
+
+
 def emit(message, reason=None, level="ok"):
     """Write the hook's PostToolUse JSON verdict to stdout.
 
@@ -111,22 +207,64 @@ def main():
             emit(f"checked {os.path.basename(path)}, no em dashes.")
         return 0
 
-    count = count_hits(result.stdout)
+    total = count_hits(result.stdout)
+    name = os.path.basename(path)
+    mode = current_mode()
+
+    # Only the dashes this edit introduced are actionable. Counting the whole file
+    # meant that touching one line of a long document demanded a rewrite of every
+    # pre-existing dash in it, including published text that was not ours to
+    # change -- a two-dash edit to a changelog reported twenty-two.
+    new_lines, preexisting = [], 0
+    if baseline_enabled():
+        baseline_text = git_head_text(path)
+        if baseline_text is not None:
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    current_text = fh.read()
+                baseline_run = subprocess.run(
+                    [sys.executable, checker],
+                    input=baseline_text, capture_output=True, text=True, timeout=30,
+                )
+                new_lines, preexisting = split_new_and_preexisting(
+                    result.stdout, current_text, baseline_run.stdout, baseline_text,
+                )
+            except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+                new_lines, preexisting = [], 0  # fail open: treat all as new
+
+    if preexisting and not new_lines:
+        # Everything flagged was already committed. Report it so the count is not
+        # a surprise later, but do not make it this edit's problem.
+        emit(
+            f"{preexisting} pre-existing em dash{'' if preexisting == 1 else 'es'} "
+            f"in {name}, none added by this edit.",
+            level="warn",
+        )
+        return 0
+
+    count = len(new_lines) if preexisting else total
     singular = count == 1
     noun = "em dash / stand-in dash" if singular else "em dashes / stand-in dashes"
     short_noun = "em dash" if singular else "em dashes"
-    name = os.path.basename(path)
-    mode = current_mode()
 
     if mode == "off":
         emit(f"{count} {noun} in {name}, not fixing.", level="warn")
         return 0
 
-    detail = (
-        f"emdash-guard: {count} {noun} found in {path}\n"
-        f"For the exact spots (path:line:col per hit) run: "
-        f"python3 {checker} {path}\n"
-    )
+    if preexisting:
+        where = ", ".join(f"line {n}" for n in new_lines)
+        detail = (
+            f"emdash-guard: {count} new {noun} in {path} ({where}).\n"
+            f"{preexisting} further hit(s) were already in the committed file and "
+            f"are NOT yours to fix -- leave them alone.\n"
+            f"To see everything, new and pre-existing: python3 {checker} {path}\n"
+        )
+    else:
+        detail = (
+            f"emdash-guard: {count} {noun} found in {path}\n"
+            f"For the exact spots (path:line:col per hit) run: "
+            f"python3 {checker} {path}\n"
+        )
 
     if mode == "prompt":
         emit(

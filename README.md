@@ -114,6 +114,13 @@ Mode lives in `~/.claude/emdash-guard/config.json` (or `$CLAUDE_CONFIG_DIR`);
 `EMDASH_GUARD_AUTOFIX` overrides it for one session. Which files get checked is
 `EMDASH_GUARD_EXTENSIONS` (default: markdown and plain text; `*` for everything).
 
+Only dashes the current edit introduced are flagged. The committed version of the
+file is the baseline, so touching one line of a long document no longer demands a
+rewrite of every dash already in it, and pre-existing hits are reported separately
+rather than counted against you. A file with no committed version yet, or one
+outside a git repo, has no baseline and so every hit counts as new. Set
+`EMDASH_GUARD_BASELINE=off` to go back to counting the whole file.
+
 ## commit-guard
 
 The `PreToolUse` hook is automatic. For the git-level backstop, which catches
