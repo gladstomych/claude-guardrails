@@ -39,6 +39,11 @@
       "name": "pip-guard",
       "source": "./plugins/pip-guard",
       "description": "Blocks pip installs into the global site-packages and points Claude at the project venv; stands down inside a venv/conda env, and PIP_GUARD_ALLOW=1 lets a user-approved global install through."
+    },
+    {
+      "name": "paste-guard",
+      "source": "./plugins/paste-guard",
+      "description": "Stop hook: when a chat reply shows a shell snippet that would break in your login shell ($SHELL, e.g. bash-isms shown to a fish user), Claude re-emits the command natively. Scripts and tool calls are never touched."
     }
   ]
 }

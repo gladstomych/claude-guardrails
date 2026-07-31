@@ -226,6 +226,34 @@ stand the guard down for a whole session instead. Non-install subcommands
 over-blocks by design: `sudo pip install` and `pip install --user` both count
 as global, and a pip run from inside a script file is out of its remit.
 
+## paste-guard
+
+Commands shown in chat get copy-pasted into *your* terminal, and your terminal
+runs whatever `$SHELL` says, not whatever dialect the model happened to write.
+A fish user pasting `export VAR=val` gets a syntax error; a bash user pasting
+`set -gx VAR val` gets nonsense.
+
+The `Stop` hook reads the finished reply, checks each fenced shell snippet
+(```` ```bash ````, ```` ```sh ````, ```` ```fish ````, ...) against your
+shell, and when a line would break there it blocks the stop once so Claude
+re-emits the affected commands natively. One block, one re-emit, never a loop
+(`stop_hook_active` is honoured).
+
+The target shell is `$SHELL`, resolved at check time, never hardcoded: a fish
+user gets bash-isms flagged (`export VAR=val`, `${VAR}`, heredocs, `if/then/fi`,
+`func() { }`, ...), a bash/zsh user gets fish-isms flagged (`set -gx`,
+`function ... end`, and `(cmd)` substitution in argument position, which fish
+accepts and POSIX shells reject; plain subshells and `$(cmd)` stay unflagged,
+and `$(cmd)` is likewise fine for fish, which has accepted it since 3.4). `PASTE_GUARD_SHELL` pins a different target for a session,
+or stands the guard down entirely (`off`). Unrecognised shells (nushell,
+PowerShell, csh) are left alone rather than guessed at.
+
+Deliberately out of scope: script *files* (they go through Write/Edit, and a
+script displayed in chat is skipped when it opens with a shebang or runs past
+`PASTE_GUARD_MAX_LINES`, default 25), tool calls Claude executes itself, and
+untagged fences. The snippet check is about what lands in your paste buffer,
+nothing else.
+
 ## commit-style
 
 Warns when a commit subject is not Conventional Commits format, never blocks.

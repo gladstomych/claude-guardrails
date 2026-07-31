@@ -1,0 +1,8 @@
+{
+  "name": "paste-guard",
+  "description": "Stop hook: when a chat reply contains a shell snippet that would break in your login shell ($SHELL), it has Claude re-emit the command natively. Script files and tool calls are never touched.",
+  "version": "0.1.0",
+  "author": {
+    "name": "gladstomych"
+  }
+}

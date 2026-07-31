@@ -767,6 +767,165 @@ assert_deny "PIP_GUARD_VERBOSE=0 never silences a block" deny
 pipguard 'not json at all'
 assert_exit "malformed JSON -> pass (0)" 0 "$RC"
 
+echo "== paste-guard Stop hook (block_foreign_snippets.py) =="
+PG="$ROOT/plugins/paste-guard/scripts"
+
+# Build a transcript whose final turn is one user message plus one assistant
+# reply, the reply text read from a file, then drive the Stop hook against it
+# with the target shell pinned per case.
+mk_transcript() { # <assistant_text_file>
+    python3 - "$1" > "$WORK/transcript.jsonl" <<'PY'
+import json, sys
+text = open(sys.argv[1]).read()
+print(json.dumps({"message": {"role": "user",
+                              "content": [{"type": "text", "text": "hi"}]}}))
+print(json.dumps({"message": {"role": "assistant",
+                              "content": [{"type": "text", "text": text}]}}))
+PY
+}
+pasteguard() { # <shell> [VAR=val ...]
+    sh=$1; shift
+    printf '{"hook_event_name":"Stop","stop_hook_active":false,"transcript_path":"%s"}' \
+        "$WORK/transcript.jsonl" | \
+        env -u PASTE_GUARD_SHELL -u PASTE_GUARD_VERBOSE SHELL="$sh" "$@" \
+        python3 "$PG/block_foreign_snippets.py" >"$WORK/stdout" 2>/dev/null
+    RC=$?
+}
+
+printf 'Run this:\n\n```bash\nexport FOO=bar\nFOO=baz\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish
+assert_exit "bash-isms for a fish user -> exit 0 (verdict in JSON)" 0 "$RC"
+assert_field "bash-isms for a fish user -> decision block" decision block
+assert_field_has "reason names the user's shell" reason "fish"
+assert_field_has "reason shows the native form" reason "set -x VAR val"
+assert_field_has "reason forbids tool use on the re-emit" reason "Do not run tools"
+assert_field_has "user line says flagged" systemMessage "would break in fish"
+
+pasteguard /bin/bash
+assert_field "same snippet for a bash user -> no decision" decision ""
+assert_field_has "bash user -> pass notice" systemMessage "pastes clean into bash"
+
+printf 'Set it with:\n\n```fish\nset -gx FOO bar\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /bin/bash
+assert_field "fish-isms for a bash user -> decision block" decision block
+assert_field_has "reason shows the bash form" reason "export"
+pasteguard /usr/bin/fish
+assert_field "fish snippet for a fish user -> no decision" decision ""
+
+# fish command substitution in argument position: fine in fish, a syntax
+# error in POSIX shells; bash subshells and $(cmd) must stay unflagged.
+printf 'Store it:\n\n```fish\naws sm put-secret-value --secret-string (grep -o . .env)\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /bin/bash
+assert_field "(cmd) argument for a bash user -> decision block" decision block
+assert_field_has "reason shows \$(cmd) as the native form" reason '$(cmd)'
+pasteguard /usr/bin/fish
+assert_field "(cmd) argument for a fish user -> no decision" decision ""
+printf 'Build:\n\n```bash\n(cd /tmp && make) && echo ok $(date)\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /bin/bash
+assert_field "bash subshell and \$(cmd) -> no decision" decision ""
+
+printf 'Try:\n\n```sh\necho "${HOME}/x" && git status\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish
+assert_field 'braced ${VAR} for a fish user -> decision block' decision block
+
+printf 'Clean:\n\n```bash\ngit status && ls -la\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish
+assert_field "portable snippet -> no decision" decision ""
+assert_field_has "portable snippet -> pass notice" systemMessage "pastes clean into fish"
+
+# Literal regions are not shell syntax: backticks in a single-quoted SQL
+# string, in a full-line comment, or in a trailing comment must not trip a
+# rule. All three shapes came out of real session history.
+printf 'Query:\n\n```bash\nbq query %s\n```\n' "'SELECT x FROM \`proj.ds.t\`'" > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish
+assert_field "backticks inside single quotes -> no decision" decision ""
+printf 'Note:\n\n```bash\n# run \`claude\` to log in\ngit status\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish
+assert_field "backticks in a full-line comment -> no decision" decision ""
+printf 'Note:\n\n```bash\n./run.sh  # then try \`nvim\`\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish
+assert_field "backticks in a trailing comment -> no decision" decision ""
+printf 'Print:\n\n```bash\necho %s\n```\n' "'\${HOME} stays literal'" > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish
+assert_field 'single-quoted ${VAR} -> no decision' decision ""
+
+printf 'The script:\n\n```bash\n#!/bin/bash\nexport FOO=bar\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish
+[ -s "$WORK/stdout" ] && bad "shebang block: guard spoke about a script display" || ok "shebang block: skipped, a script declares its own dialect"
+
+printf 'Code:\n\n```python\nimport os\nos.environ["X"] = "1"\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish
+[ -s "$WORK/stdout" ] && bad "python block: guard narrated a non-shell fence" || ok "python block: guard stays quiet"
+
+printf 'No commands here, just prose.\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish
+[ -s "$WORK/stdout" ] && bad "prose reply: guard spoke" || ok "prose reply: guard stays quiet"
+
+# Bash tool calls are tool_use blocks, not text: full of bash-isms, and none
+# of the hook's business. Only prose fences are scanned.
+python3 - > "$WORK/transcript.jsonl" <<'PY'
+import json
+print(json.dumps({"message": {"role": "user",
+                              "content": [{"type": "text", "text": "hi"}]}}))
+print(json.dumps({"message": {"role": "assistant", "content": [
+    {"type": "text", "text": "Setting it now."},
+    {"type": "tool_use", "input": {"command": "export FOO=bar && VAR=val ./run.sh <<EOF\nhi\nEOF"}},
+]}}))
+print(json.dumps({"message": {"role": "user", "content": [
+    {"type": "tool_result", "content": "```bash\nexport BAZ=qux\n```"}]}}))
+PY
+printf '{"hook_event_name":"Stop","stop_hook_active":false,"transcript_path":"%s"}' \
+    "$WORK/transcript.jsonl" | \
+    env -u PASTE_GUARD_SHELL SHELL=/usr/bin/fish python3 "$PG/block_foreign_snippets.py" >"$WORK/stdout" 2>/dev/null
+assert_exit "tool_use bash command -> exit 0" 0 $?
+[ -s "$WORK/stdout" ] && bad "tool_use/tool_result: guard read tool traffic" || ok "tool_use/tool_result: invisible to the guard, prose only"
+
+printf 'Big listing:\n\n```bash\n%s\nexport FOO=bar\n```\n' \
+    "$(python3 -c 'print("\n".join("echo line%d" % i for i in range(30)))')" > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish
+[ -s "$WORK/stdout" ] && bad "30-line block: guard treated a listing as a paste" || ok "30-line block: skipped as a file listing, not a paste"
+
+printf 'Run this:\n\n```bash\nexport FOO=bar\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/transcript.jsonl" 2>/dev/null; mk_transcript "$WORK/reply.md"
+printf '{"hook_event_name":"Stop","stop_hook_active":true,"transcript_path":"%s"}' \
+    "$WORK/transcript.jsonl" | SHELL=/usr/bin/fish python3 "$PG/block_foreign_snippets.py" >"$WORK/stdout" 2>/dev/null
+assert_exit "stop_hook_active -> exit 0" 0 $?
+[ -s "$WORK/stdout" ] && bad "stop_hook_active: guard blocked again (loop!)" || ok "stop_hook_active: guard stands down, no loop"
+
+pasteguard /usr/bin/fish PASTE_GUARD_SHELL=off
+[ -s "$WORK/stdout" ] && bad "PASTE_GUARD_SHELL=off still spoke" || ok "PASTE_GUARD_SHELL=off stands the guard down"
+pasteguard /bin/bash PASTE_GUARD_SHELL=fish
+assert_field "PASTE_GUARD_SHELL=fish beats \$SHELL=bash -> block" decision block
+pasteguard /usr/bin/nu
+[ -s "$WORK/stdout" ] && bad "unknown shell: guard guessed" || ok "unknown shell (nu): left alone, no guessing"
+
+pasteguard /usr/bin/fish PASTE_GUARD_VERBOSE=0
+assert_field "PASTE_GUARD_VERBOSE=0 never silences a block" decision block
+printf 'Clean:\n\n```bash\ngit status\n```\n' > "$WORK/reply.md"
+mk_transcript "$WORK/reply.md"
+pasteguard /usr/bin/fish PASTE_GUARD_VERBOSE=0
+[ -s "$WORK/stdout" ] && bad "PASTE_GUARD_VERBOSE=0 still spoke on a pass" || ok "PASTE_GUARD_VERBOSE=0 silences the pass notice"
+
+printf '{"hook_event_name":"Stop","stop_hook_active":false,"transcript_path":"/no/such/file"}' | \
+    SHELL=/usr/bin/fish python3 "$PG/block_foreign_snippets.py" >"$WORK/stdout" 2>/dev/null
+assert_exit "missing transcript -> pass (0)" 0 $?
+printf 'not json' | SHELL=/usr/bin/fish python3 "$PG/block_foreign_snippets.py" >"$WORK/stdout" 2>/dev/null
+assert_exit "malformed JSON -> pass (0)" 0 $?
+
 echo "== notice styling (hookout.py house style) =="
 cmd_trailer=$(printf 'git commit -m "feat: x\n\nCo-Authored-By: Claude <noreply@anthropic.com>"' | jstr)
 
@@ -811,8 +970,8 @@ assert_sysmsg "NO_COLOR: block symbol survives" "x blocked"
 
 # Every plugin ships the same helper: drift here is a bug.
 if cmp -s "$CMG/hookout.py" "$PSH/hookout.py" && cmp -s "$CMG/hookout.py" "$EMD/hookout.py" \
-    && cmp -s "$CMG/hookout.py" "$PIP/hookout.py"; then
-    ok "hookout.py is byte-identical across the four guards"
+    && cmp -s "$CMG/hookout.py" "$PIP/hookout.py" && cmp -s "$CMG/hookout.py" "$PG/hookout.py"; then
+    ok "hookout.py is byte-identical across the five guards"
 else
     bad "hookout.py copies have drifted"
 fi
