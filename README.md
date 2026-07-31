@@ -114,6 +114,19 @@ Mode lives in `~/.claude/emdash-guard/config.json` (or `$CLAUDE_CONFIG_DIR`);
 `EMDASH_GUARD_AUTOFIX` overrides it for one session. Which files get checked is
 `EMDASH_GUARD_EXTENSIONS` (default: markdown and plain text; `*` for everything).
 
+If a spaced hyphen used as a pause is part of *your* writing style rather than an
+AI tell, turn that class of hit off while keeping the guard for real em/en dashes
+and the other unicode stand-ins:
+
+```shell
+/emdash-guard:hyphens          # show the current setting
+/emdash-guard:hyphens flag     # default: a spaced hyphen counts as a stand-in dash
+/emdash-guard:hyphens allow    # spaced hyphens are your style, never flagged
+```
+
+Same per-user config file as autofix; `EMDASH_GUARD_HYPHENS` overrides it for one
+session.
+
 Only dashes the current edit introduced are flagged. The committed version of the
 file is the baseline, so touching one line of a long document no longer demands a
 rewrite of every dash already in it, and pre-existing hits are reported separately

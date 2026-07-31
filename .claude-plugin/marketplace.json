@@ -8,7 +8,7 @@
     {
       "name": "emdash-guard",
       "source": "./plugins/emdash-guard",
-      "description": "Post-write hook: counts em dashes and stand-in dashes in files Claude writes and shows the count, then fixes, ignores, or asks, per the /emdash-guard:autofix setting."
+      "description": "Post-write hook: counts em dashes and stand-in dashes in files Claude writes and shows the count, then fixes, ignores, or asks, per the /emdash-guard:autofix setting; /emdash-guard:hyphens can allow spaced hyphens as your own style."
     },
     {
       "name": "commit-guard",

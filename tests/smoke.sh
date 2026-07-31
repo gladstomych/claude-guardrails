@@ -209,6 +209,47 @@ python3 "$MODE" > "$WORK/mode" 2>&1
 assert_contains "corrupt config -> overwritten cleanly on next set" "autofix: prompt" "$WORK/mode"
 python3 "$MODE" on >/dev/null 2>&1
 
+echo "== emdash-guard hyphen mode (hyphen_mode.py + the hook) =="
+HYPH="$EMD/hyphen_mode.py"
+
+python3 "$HYPH" > "$WORK/mode" 2>&1
+assert_exit "no hyphens setting yet -> exit 0" 0 $?
+assert_contains "no setting -> defaults to flag" "hyphens: flag" "$WORK/mode"
+
+f="$WORK/hyph.md"; printf 'results - mixed, more later\n' > "$f"
+run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
+assert_field "flag (default): spaced hyphen -> decision block" decision block
+
+python3 "$HYPH" allow > "$WORK/mode" 2>&1
+assert_exit "set allow -> exit 0" 0 $?
+assert_contains "set allow -> confirms" "hyphens set to: allow" "$WORK/mode"
+python3 "$HYPH" > "$WORK/mode" 2>&1
+assert_contains "set allow -> persisted" "hyphens: allow" "$WORK/mode"
+
+run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
+assert_field "allow: spaced hyphen -> no decision" decision ""
+assert_field_has "allow: reported clean, hyphens allowed" systemMessage "spaced hyphens allowed"
+
+f="$WORK/hyphmix.md"; printf 'a %s b\nresults - mixed\n' "$EMDASH" > "$f"
+run_hook "$EMD/post_write_emdash.py" "$(json_write "$f")"
+assert_field "allow: a real em dash still blocks" decision block
+assert_field_has "allow: count excludes the allowed hyphen" systemMessage "1 em dash"
+assert_field_has "allow: reason says to leave hyphens alone" reason "leave them alone"
+
+printf '%s' "$(json_write "$f")" | EMDASH_GUARD_HYPHENS=flag python3 "$EMD/post_write_emdash.py" >"$WORK/stdout" 2>/dev/null
+assert_field_has "env flag overrides file allow -> both count" systemMessage "2 em dashes"
+
+python3 "$MODE" > "$WORK/mode" 2>&1
+assert_contains "autofix mode untouched by hyphens writes" "autofix: on" "$WORK/mode"
+
+python3 "$HYPH" sideways > "$WORK/mode" 2>&1
+assert_exit "unknown hyphens mode -> exit 2" 2 $?
+assert_contains "unknown hyphens mode -> lists valid modes" "flag, allow" "$WORK/mode"
+python3 "$HYPH" > "$WORK/mode" 2>&1
+assert_contains "unknown mode left the saved setting alone" "hyphens: allow" "$WORK/mode"
+
+python3 "$HYPH" flag >/dev/null 2>&1
+
 echo "== commit-guard PreToolUse (block_coauthor.py) =="
 
 json_bash() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$1"; }

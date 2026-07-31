@@ -1,7 +1,7 @@
 {
   "name": "emdash-guard",
-  "description": "Counts em dashes and stand-in dashes in files Claude writes and reports them back; autofix mode (on / off / prompt) is set with /emdash-guard:autofix.",
-  "version": "0.4.0",
+  "description": "Counts em dashes and stand-in dashes in files Claude writes and reports them back; autofix mode (on / off / prompt) is set with /emdash-guard:autofix, and /emdash-guard:hyphens can allow spaced hyphens as your own style.",
+  "version": "0.5.0",
   "author": {
     "name": "gladstomych"
   }

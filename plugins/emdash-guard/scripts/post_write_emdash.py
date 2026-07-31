@@ -18,6 +18,11 @@ Autofix mode (see scripts/autofix_mode.py and /emdash-guard:autofix):
   off     never block; only show the user the count
   prompt  block, but have Claude ask the user before rewriting anything
 
+Hyphens setting (see scripts/hyphen_mode.py and /emdash-guard:hyphens):
+  flag    a spaced hyphen used as a pause counts as a stand-in dash (default)
+  allow   spaced hyphens are the user's own style and are never flagged; real
+          em/en dashes and the other unicode stand-ins still count
+
 A clean file is reported as clean, so the guard is visible when it is working;
 silence that with EMDASH_GUARD_VERBOSE=0 or GUARDRAILS_VERBOSE=0. Only files the
 hook actually checked are ever mentioned.
@@ -39,6 +44,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from autofix_mode import current_mode  # noqa: E402
 from hookout import style, verbose  # noqa: E402
+from hyphen_mode import current_mode as hyphen_mode  # noqa: E402
 
 DEFAULT_EXTENSIONS = {
     ".md", ".markdown", ".mdx", ".txt", ".text", ".rst",
@@ -66,6 +72,18 @@ def target_path(payload):
 def count_hits(checker_stdout):
     """How many dashes the checker flagged: one line per hit, "path:l:c: found '-'"."""
     return sum(1 for line in checker_stdout.splitlines() if ": found '" in line)
+
+
+def drop_hyphen_hits(checker_stdout):
+    """Strip spaced-hyphen hits, for when the user's hyphens setting is `allow`.
+
+    A plain hyphen is the one stand-in some writers use on purpose ("point 1 - so
+    and so"). Real em/en dashes and the other unicode stand-ins keep counting.
+    """
+    return "\n".join(
+        line for line in checker_stdout.splitlines()
+        if not (": found '" in line and line.rstrip().endswith("'-'"))
+    )
 
 
 def hit_line_numbers(checker_stdout):
@@ -207,8 +225,17 @@ def main():
             emit(f"checked {os.path.basename(path)}, no em dashes.")
         return 0
 
-    total = count_hits(result.stdout)
     name = os.path.basename(path)
+    allow_hyphens = hyphen_mode() == "allow"
+    hits = drop_hyphen_hits(result.stdout) if allow_hyphens else result.stdout
+
+    total = count_hits(hits)
+    if total == 0:
+        # Everything flagged was a spaced hyphen, and those are the user's style.
+        if verbose("EMDASH_GUARD"):
+            emit(f"checked {name}, no em dashes (spaced hyphens allowed).")
+        return 0
+
     mode = current_mode()
 
     # Only the dashes this edit introduced are actionable. Counting the whole file
@@ -226,8 +253,10 @@ def main():
                     [sys.executable, checker],
                     input=baseline_text, capture_output=True, text=True, timeout=30,
                 )
+                baseline_hits = (drop_hyphen_hits(baseline_run.stdout)
+                                 if allow_hyphens else baseline_run.stdout)
                 new_lines, preexisting = split_new_and_preexisting(
-                    result.stdout, current_text, baseline_run.stdout, baseline_text,
+                    hits, current_text, baseline_hits, baseline_text,
                 )
             except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
                 new_lines, preexisting = [], 0  # fail open: treat all as new
@@ -251,6 +280,11 @@ def main():
         emit(f"{count} {noun} in {name}, not fixing.", level="warn")
         return 0
 
+    hyphen_note = (
+        "Spaced hyphens ('-') are allowed by the user's setting; if the checker "
+        "lists any, leave them alone.\n"
+    ) if allow_hyphens else ""
+
     if preexisting:
         where = ", ".join(f"line {n}" for n in new_lines)
         detail = (
@@ -258,12 +292,14 @@ def main():
             f"{preexisting} further hit(s) were already in the committed file and "
             f"are NOT yours to fix -- leave them alone.\n"
             f"To see everything, new and pre-existing: python3 {checker} {path}\n"
+            f"{hyphen_note}"
         )
     else:
         detail = (
             f"emdash-guard: {count} {noun} found in {path}\n"
             f"For the exact spots (path:line:col per hit) run: "
             f"python3 {checker} {path}\n"
+            f"{hyphen_note}"
         )
 
     if mode == "prompt":
